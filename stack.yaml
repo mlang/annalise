@@ -1,0 +1,7 @@
+resolver: lts-18.4
+packages:
+- .
+
+extra-deps:
+- brick-skylighting-0.3
+- chessIO-0.8.0.0

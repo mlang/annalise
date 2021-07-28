@@ -1,0 +1,51 @@
+cabal-version:      2.4
+name:               annalise
+version:            0.1
+
+synopsis:           Chess analysis TUI
+-- description:
+
+license:            BSD3
+
+author:             Mario Lang
+maintainer:         mlang@blind.guru
+
+copyright: 2021 Mario Lang
+
+library
+    exposed-modules:  Annalise
+    other-modules:    Paths_annalise,
+                      Brick.Widgets.Chess
+
+    build-depends:    base >=4.14,
+                      brick,
+                      brick-skylighting,
+                      bytestring,
+                      chessIO,
+                      containers,
+                      directory,
+                      dyre,
+                      file-embed,
+                      lens,
+                      mtl >= 2.2.2,
+                      o-clock,
+                      optparse-applicative,
+                      skylighting,
+                      split,
+                      stm,
+                      text,
+                      text-zipper >= 0.11,
+                      vector,
+                      vty
+    hs-source-dirs:   src
+    default-language: Haskell2010
+
+executable annalise
+    main-is:          Main.hs
+
+    build-depends:    annalise == 0.1,
+                      base >=4.14
+
+    hs-source-dirs:   app
+    default-language: Haskell2010
+    ghc-options: -threaded 

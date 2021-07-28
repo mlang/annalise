@@ -1,0 +1,7 @@
+cradle:
+  stack:
+    - path: "./src"
+      component: "annalise:lib"
+
+    - path: "./app/Main.hs"
+      component: "annalise:exe"
