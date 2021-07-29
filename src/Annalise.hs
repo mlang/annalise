@@ -9,6 +9,7 @@
 {-# LANGUAGE TemplateHaskell      #-}
 {-# LANGUAGE TupleSections        #-}
 {-# LANGUAGE TypeSynonymInstances #-}
+{-# LANGUAGE ViewPatterns         #-}
 module Annalise (
   Config( engineExecutable
         , engineArgs
@@ -30,66 +31,79 @@ module Annalise (
 , annalise
 ) where
 
-import qualified Brick.AttrMap             as Brick
-import           Brick.BChan               (BChan, newBChan, writeBChanNonBlocking)
-import Control.Concurrent.STM (atomically)
-import Control.Concurrent.STM.TChan
-import           Brick.Focus               (FocusRing, focusGetCurrent,
-                                            focusRing, focusRingCursor,
-                                            focusSetCurrent)
-import Data.Foldable (for_)
-import           Time.Rational (KnownDivRat)
-import           Time.Units (Microsecond, sec, Time)
-import qualified Brick.Main                as Brick
-import Data.Vector.Unboxed (Vector)
-import Control.Concurrent (forkIO, killThread, ThreadId)
-import           Brick.Types               (BrickEvent (AppEvent, VtyEvent),
-                                            EventM, Location (..), Next,
-                                            ViewportType (Both, Horizontal, Vertical),
-                                            Widget, handleEventLensed)
-import           Brick.Widgets.Border      (borderWithLabel)
+import qualified Brick.AttrMap                as Brick
+import           Brick.BChan                  (BChan, newBChan,
+                                               writeBChanNonBlocking)
+import           Brick.Focus                  (FocusRing, focusGetCurrent,
+                                               focusRing, focusRingCursor,
+                                               focusSetCurrent, withFocusRing)
+import qualified Brick.Main                   as Brick
+import           Brick.Types                  (BrickEvent (AppEvent, VtyEvent),
+                                               EventM, Location (..), Next,
+                                               ViewportType (Both, Horizontal, Vertical),
+                                               Widget, handleEventLensed)
+import           Brick.Widgets.Border         (borderWithLabel)
+import           Brick.Widgets.Center         (hCenter)
 import           Brick.Widgets.Chess
-import           Brick.Widgets.Core        (fill, hBox, hLimit, showCursor, str,
-                                            txt, txtWrap, vBox, vLimit,
-                                            viewport, (<+>), (<=>))
-import           Brick.Widgets.Edit        (Editor, editContentsL, editor,
-                                            getEditContents, handleEditorEvent,
-                                            renderEditor)
-import           Brick.Widgets.Skylighting (attrMappingsForStyle, highlight)
-import qualified Config.Dyre               as Dyre
-import qualified Config.Dyre.Paths         as Dyre
-import qualified Config.Dyre.Relaunch      as Dyre
-import           Control.Applicative       ((<|>))
-import           Control.Lens              ((^?), (?~), Getter, Getting, Lens', assign, at,
-                                            from, lens, modifying, to, use,
-                                            uses, view, (%~), (&), (.=), (.~),
-                                            (<>=), (^.))
-import           Control.Monad             (forever, join, void, when)
-import           Control.Monad.IO.Class    (MonadIO (liftIO))
-import           Control.Monad.State       (StateT, evalStateT, execStateT, get,
-                                            lift, modify, put)
-import           Data.Bifunctor            (first, second)
-import           Data.ByteString           (ByteString)
-import qualified Data.ByteString           as ByteString
-import           Data.Char                 (toLower)
-import           Data.FileEmbed            (embedFile)
-import           Data.Functor              ((<&>))
-import           Data.List                 (find, intersperse, isPrefixOf, sort)
-import           Data.Map                  (Map)
-import qualified Data.Map                  as Map
-import           Data.Maybe                (fromJust, fromMaybe, isJust)
-import           Data.Text                 (Text)
-import qualified Data.Text                 as Text
-import qualified Data.Text.Encoding        as Text
-import qualified Data.Text.Zipper          as Zipper
+import           Brick.Widgets.Core           (fill, hBox, hLimit, showCursor,
+                                               str, strWrap, txt, txtWrap, vBox,
+                                               vLimit, viewport, (<+>), (<=>))
+import           Brick.Widgets.Edit           (Editor, editContentsL, editor,
+                                               getEditContents,
+                                               handleEditorEvent, renderEditor)
+import qualified Brick.Widgets.List           as Brick
+import           Brick.Widgets.Skylighting    (attrMappingsForStyle, highlight)
+import qualified Config.Dyre                  as Dyre
+import qualified Config.Dyre.Paths            as Dyre
+import qualified Config.Dyre.Relaunch         as Dyre
+import           Control.Applicative          ((<|>))
+import           Control.Concurrent           (ThreadId, forkIO, killThread)
+import           Control.Concurrent.STM       (atomically)
+import           Control.Concurrent.STM.TChan
+import           Control.Lens                 (Getter, Getting, Lens', assign,
+                                               at, from, lens, modifying, to,
+                                               use, uses, view, (%=), (%~), (&),
+                                               (.=), (.~), (<>=), (?~), (^.),
+                                               (^?!), (^?))
+import           Control.Monad                (forever, join, void, when)
+import           Control.Monad.IO.Class       (MonadIO (liftIO))
+import           Control.Monad.State          (StateT, evalStateT, execStateT,
+                                               get, lift, modify, put)
+import           Data.Bifunctor               (first, second)
+import           Data.ByteString              (ByteString)
+import qualified Data.ByteString              as ByteString
+import           Data.Char                    (toLower)
+import           Data.FileEmbed               (embedFile)
+import           Data.Foldable                (foldl', for_)
+import           Data.Functor                 ((<&>))
+import           Data.List                    (elemIndex, find, intersperse,
+                                               isPrefixOf, sort)
+import           Data.List.NonEmpty           (NonEmpty)
+import qualified Data.List.NonEmpty           as NonEmpty
+import           Data.Map                     (Map)
+import qualified Data.Map                     as Map
+import           Data.Maybe                   (fromJust, fromMaybe, isJust)
+import           Data.Text                    (Text)
+import qualified Data.Text                    as Text
+import qualified Data.Text.Encoding           as Text
+import qualified Data.Text.Zipper             as Zipper
+import           Data.Tree                    (Tree (..), foldTree)
+import           Data.Tree.Zipper             (Full, TreePos, forest,
+                                               fromForest, label, nextTree)
+import qualified Data.Tree.Zipper             as TreePos
+import qualified Data.Vector                  as Vector
+import qualified Data.Vector.Unboxed          as Unboxed
 import           Game.Chess
-import  qualified       Game.Chess.UCI as UCI
+import           Game.Chess.Polyglot
 import           Game.Chess.SAN
-import qualified Graphics.Vty              as Vty
-import           Options.Applicative       hiding (str)
-import           Paths_annalise            (getLibDir)
+import qualified Game.Chess.UCI               as UCI
+import qualified Graphics.Vty                 as Vty
+import           Options.Applicative          hiding (str)
+import           Paths_annalise               (getLibDir)
 import           Skylighting
-import           System.Directory          (doesFileExist)
+import           System.Directory             (doesFileExist)
+import           Time.Rational                (KnownDivRat)
+import           Time.Units                   (Microsecond, Time, sec)
 
 data Config = Config
   { engineExecutable   :: FilePath
@@ -97,6 +111,7 @@ data Config = Config
   , channelSize        :: Int
   , theme              :: Brick.AttrMap
   , chessboardKeymap   :: Keymap
+  , explorerKeymap     :: Keymap
   , configEditorKeymap :: Keymap
   , globalKeymap       :: Keymap
   , onStartup          :: Action ()
@@ -121,6 +136,11 @@ class HasChessboardKeymap a where
 
 instance HasChessboardKeymap Config where
   chessboardKeymapL = lens chessboardKeymap $ \s b -> s { chessboardKeymap = b }
+
+class HasExplorerKeymap a where explorerKeymapL :: Lens' a Keymap
+
+instance HasExplorerKeymap Config where
+  explorerKeymapL = lens explorerKeymap $ \s b -> s { explorerKeymap = b }
 
 class HasConfigEditorKeymap a where
   configEditorKeymapL :: Lens' a Keymap
@@ -152,6 +172,7 @@ defaultConfig = Config { .. } where
   channelSize = 20
   theme = defaultTheme breezeDark
   chessboardKeymap = defaultChessboardKeymap
+  explorerKeymap = defaultExplorerKeymap
   configEditorKeymap = defaultConfigEditorKeymap
   globalKeymap = defaultGlobalKeymap
   onStartup = pure ()
@@ -171,6 +192,7 @@ commandLine cfg = Config <$>
             <> showDefault <> value (channelSize cfg)) <*>
   pure (theme cfg) <*>
   pure (chessboardKeymap cfg) <*>
+  pure (explorerKeymap cfg) <*>
   pure (configEditorKeymap cfg) <*>
   pure (globalKeymap cfg) <*>
   pure (onStartup cfg) <*>
@@ -179,10 +201,85 @@ commandLine cfg = Config <$>
 
 ----------------------------------------------------------------------------------
 
+data Explorer = Explorer
+  { _eInitial :: Position
+  , _eTreePos :: TreePos Full (NonEmpty Ply)
+  }
+
+eInitial :: Lens' Explorer Position
+eInitial = lens _eInitial $ \s b -> s { _eInitial = b }
+
+eTreePos :: Lens' Explorer (TreePos Full (NonEmpty Ply))
+eTreePos = lens _eTreePos $ \s b -> s { _eTreePos = b }
+
+defaultExplorer :: Explorer
+defaultExplorer = Explorer { .. } where
+  _eInitial = startpos
+  _eTreePos = fromJust . nextTree . fromForest $
+              pathTree <$> bookForest defaultBook _eInitial
+
+pathTree :: Tree a -> Tree (NonEmpty a)
+pathTree = foldTree $ \a -> Node (pure a) . (fmap . fmap) (NonEmpty.cons a)
+
+eCurrentPosition, ePreviousPosition :: Explorer -> Position
+eCurrentPosition e = foldl' unsafeDoPly (e^.eInitial) $
+                     e^.eTreePos.to label
+ePreviousPosition e = foldl' unsafeDoPly (e^.eInitial) $
+                      e^.eTreePos.to label.to NonEmpty.init
+
+elemList :: Eq a => n -> a -> [a] -> Brick.List n a
+elemList n x xs = Brick.list n (Vector.fromList xs) 1
+                & Brick.listSelectedL .~ i where
+  i = x `elemIndex` xs
+
+ePlyList :: Explorer -> Brick.List Name Ply
+ePlyList (view eTreePos -> tp) = elemList PlyList ply plies where
+  ply = NonEmpty.last . label $ tp
+  plies = fmap (NonEmpty.last . rootLabel) . forest $ tp
+
+renderExplorer :: AppState -> [Widget Name]
+renderExplorer s = go $ view asExplorer s where
+  go e = [ui] where
+    ui = hLimit 9 list <+> hLimit 23 board <+> var
+    list = withFocusRing' s ExplorerView
+      (Brick.renderList (drawPly (ePreviousPosition e))) (ePlyList e)
+    drawPly p foc = putCursorIf foc PlyList (0, 0) . str . toSAN p
+    board = renderPosition Chessboard (eCurrentPosition e) (Just (color (ePreviousPosition e))) Nothing english True
+    var = strWrap $ varToSAN (e ^. eInitial) (e ^. eTreePos . to label)
+withFocusRing' s v f a = withFocusRing (s ^. asViewFocusL . at v . to fromJust)
+  f a
+
+explorerHandler :: EventHandler
+explorerHandler = EventHandler (asConfig . explorerKeymapL) $ \e ->
+  continue
+
+explorerPrev, explorerNext, explorerFirstChild, explorerParent :: Action ()
+explorerPrev = asExplorer . eTreePos %= (fromMaybe <*> TreePos.prev)
+explorerNext = asExplorer . eTreePos %= (fromMaybe <*> TreePos.next)
+explorerFirstChild = asExplorer . eTreePos %= (fromMaybe <*> TreePos.firstChild)
+explorerParent = asExplorer . eTreePos %= (fromMaybe <*> TreePos.parent)
+
+defaultExplorerKeymap = Map.fromList
+  [ ( Vty.EvKey Vty.KDown []
+    , explorerNext *> continue
+    )
+  , ( Vty.EvKey Vty.KUp []
+    , explorerPrev *> continue
+    )
+  , ( Vty.EvKey Vty.KRight []
+    , explorerFirstChild *> continue
+    )
+  , ( Vty.EvKey Vty.KLeft []
+    , explorerParent *> continue
+    )
+  ]
+
+------------------------------------------------------------------------------
+
 data Analyser = Analyser
   { _aEngine :: UCI.Engine
   , _aReader :: Maybe (TChan UCI.BestMove, ThreadId)
-  , _aPV :: Maybe (Vector Ply)
+  , _aPV     :: Maybe (Unboxed.Vector Ply)
   }
 
 aEngine :: Lens' Analyser UCI.Engine
@@ -191,7 +288,7 @@ aEngine = lens _aEngine $ \s b -> s { _aEngine = b }
 aReader :: Lens' Analyser (Maybe (TChan UCI.BestMove, ThreadId))
 aReader = lens _aReader $ \s b -> s { _aReader = b }
 
-aPV :: Lens' Analyser (Maybe (Vector Ply))
+aPV :: Lens' Analyser (Maybe (Unboxed.Vector Ply))
 aPV = lens _aPV $ \s b -> s { _aPV = b }
 
 mkAnalyser :: MonadIO m => Config -> m (Maybe Analyser)
@@ -250,7 +347,9 @@ stopSearch = do
       Nothing -> pure False
     Nothing -> pure False
 
-data ViewName = ChessboardView | ConfigEditorView deriving (Eq, Ord, Read, Show)
+------------------------------------------------------------------------------
+
+data ViewName = ChessboardView | ExplorerView | ConfigEditorView deriving (Eq, Ord, Read, Show)
 type Action = StateT AppState (EventM Name)
 type Keymap = Map Vty.Event (Action (Next AppState))
 
@@ -269,6 +368,7 @@ renderView ConfigEditorView s = [vBox $ edit <> err <> msg <> stat] where
     Nothing -> []
     Just t  -> [txtWrap t]
   stat = [vLimit 1 $ str "C-q to quit"]
+renderView ExplorerView s = renderExplorer s
 renderView ChessboardView s = renderGame s
 
 configEditorText :: Getter AppState Text
@@ -281,6 +381,9 @@ defaultGlobalKeymap = Map.fromList
     )
   , ( Vty.EvKey (Vty.KFun 2) []
     , switchView ChessboardView *> continue
+    )
+  , ( Vty.EvKey (Vty.KFun 3) []
+    , switchView ExplorerView *> continue
     )
   , ( Vty.EvKey (Vty.KFun 10) []
     , switchView ConfigEditorView *> continue
@@ -433,6 +536,7 @@ dispatch (EventHandler keymapL fallback) s e = evalStateT action s where
 
 handleViewEvent :: ViewName -> AppState -> Vty.Event -> EventM Name (Next AppState)
 handleViewEvent ChessboardView   = dispatch chessboardHandler
+handleViewEvent ExplorerView     = dispatch explorerHandler
 handleViewEvent ConfigEditorView = dispatch configEditorHandler
 
 data Game = Game
@@ -462,8 +566,8 @@ newGame :: Game
 newGame = Game startpos [] "" Nothing (Just E1)
 
 currentPosition, previousPosition :: Game -> Position
-currentPosition g = foldl doPly (g ^. gInitial) (g ^. gPlies)
-previousPosition g = foldl doPly (g ^. gInitial) (init (g ^. gPlies))
+currentPosition g = foldl' unsafeDoPly (g ^. gInitial) (g ^. gPlies)
+previousPosition g = foldl' unsafeDoPly (g ^. gInitial) (init (g ^. gPlies))
 
 cursorMod :: (Bool -> (Rank, File) -> (Rank, File)) -> Action ()
 cursorMod f = do
@@ -518,11 +622,11 @@ renderGame :: AppState -> [Widget Name]
 renderGame s = [w $ s ^. asGame] where
   status = case s ^. asMessage of
     Just msg -> txtWrap msg
-    Nothing -> str ""
+    Nothing  -> str ""
   pv = case s ^? asAnalyser . traverse . aPV of
     Just (Just pv) -> str $ varToSAN (s ^. asGame . to currentPosition) pv
-    _ -> str ""
-  w g = board
+    _              -> str ""
+  w g = (hLimit 23 (hCenter board) <+> var)
     <=> (hLimit 21 . vLimit 1 $ sideToMove <+> fill ' ' <+> lastPly)
     <=> input
     <=> pv
@@ -532,6 +636,7 @@ renderGame s = [w $ s ^. asGame] where
     board = renderPosition Chessboard pos Nothing cursor english (null $ g ^. gInput)
     cursor | null (g ^. gInput) = g ^. gCursor
            | otherwise          = Nothing
+    var = strWrap . varToSAN (g ^. gInitial) $ g ^. gPlies
     sideToMove = str . show . color $ pos
     lastPly = case g ^. gPlies of
       [] -> str "START"
@@ -552,7 +657,8 @@ data AppState = AppState
   , _asFocus        :: FocusRing ViewName
   , _asViewFocus    :: Map ViewName (FocusRing Name)
   , _asGame         :: Game
-  , _asAnalyser :: Maybe Analyser
+  , _asAnalyser     :: Maybe Analyser
+  , _asExplorer     :: Explorer
   , _asConfigEditor :: Editor Text Name
   , _asMessage      :: Maybe Text
   , _asRelaunch     :: Bool
@@ -575,6 +681,9 @@ asGame = lens _asGame $ \s b -> s { _asGame = b }
 
 asAnalyser :: Lens' AppState (Maybe Analyser)
 asAnalyser = lens _asAnalyser $ \s b -> s { _asAnalyser = b }
+
+asExplorer :: Lens' AppState Explorer
+asExplorer = lens _asExplorer $ \s b -> s { _asExplorer = b }
 
 asConfigEditor :: Lens' AppState (Editor Text Name)
 asConfigEditor = lens _asConfigEditor $ \s b -> s { _asConfigEditor = b }
@@ -605,17 +714,19 @@ asRelaunch = lens _asRelaunch $ \s b -> s { _asRelaunch = b }
 
 initialState :: BChan AppEvent -> Config -> AppState
 initialState chan cfg =
-  AppState chan cfg focus viewFocus newGame Nothing edit Nothing False
+  AppState chan cfg focus viewFocus newGame Nothing defaultExplorer edit Nothing False
  where
-  focus = focusRing [ChessboardView, ConfigEditorView]
+  focus = focusRing [ChessboardView, ExplorerView, ConfigEditorView]
   viewFocus = Map.fromList
     [ ( ChessboardView, focusRing [Chessboard] )
+    , ( ExplorerView, focusRing [PlyList] )
     , ( ConfigEditorView, focusRing [ConfigEditor] )
     ]
   edit = editor ConfigEditor Nothing (Text.decodeUtf8 $(embedFile "app/Main.hs"))
 
 data Name = ConfigEditor | RebuildError
           | Chessboard
+          | PlyList
           deriving (Eq, Ord, Read, Show)
 
 type AppEvent = [UCI.Info]
@@ -651,9 +762,9 @@ app = Brick.App { .. } where
     = Brick.neverShowCursor s
 
 isScore UCI.Score{} = True
-isScore _ = False
+isScore _           = False
 isPV UCI.PV{} = True
-isPV _ = False
+isPV _        = False
 
 main :: Config -> IO ()
 main inCfg = do
