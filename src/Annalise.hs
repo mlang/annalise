@@ -709,7 +709,10 @@ data Game = Game
   , _gInput   :: String
   , _gFrom    :: Maybe Square
   , _gCursor  :: Square
-  }
+  } deriving (Generic)
+
+instance Binary Game
+
 
 gInitial :: Lens' Game Position
 gInitial = lens _gInitial $ \s b -> s { _gInitial = b }
@@ -905,7 +908,10 @@ focusedWidget s = s ^. asViewFocus . at (viewName s)
 
 app :: Brick.App AppState AppEvent Name
 app = Brick.App { .. } where
-  appStartEvent = execStateT $ reloadConfigFile False >> join (use startupAction)
+  appStartEvent = execStateT $ do
+    reloadConfigFile False
+    restore
+    join (use startupAction)
   appDraw s = renderView (viewName s) s
   appHandleEvent s = go where
     go (VtyEvent e) = handleViewEvent vn n s e where
@@ -928,33 +934,33 @@ isScore _           = False
 isPV UCI.PV{} = True
 isPV _        = False
 
-data Persistent = Persistent ViewName
+data Persistent = Persistent ViewName Game
                   deriving (Generic)
 
 instance Binary Persistent
 
-persist :: Action ()
-persist = do
-  vn <- use $ asFocusL . to focusGetCurrent . to fromJust
-  liftIO . Dyre.saveBinaryState $ Persistent vn
+persistent :: Action Persistent
+persistent =
+  Persistent <$> use (asFocusL . to focusGetCurrent . to fromJust)
+             <*> use asGame
 
-restore :: AppState -> IO AppState
-restore s = do
-  (Persistent vn) <- Dyre.restoreBinaryState $ Persistent
-                     (s ^. asConfig . defaultViewL)
-  pure $ s & asFocusL %~ focusSetCurrent vn
+persist :: Action ()
+persist = liftIO . Dyre.saveBinaryState =<< persistent
+
+restore :: Action ()
+restore = do
+  (Persistent vn g) <- liftIO . Dyre.restoreBinaryState =<< persistent
+  asFocusL %= focusSetCurrent vn
+  asGame .= g
 
 main :: Config -> IO ()
 main inCfg = do
   cfg <- execParser $ info (commandLine inCfg <**> helper) $ briefDesc
-  vn <- Dyre.restoreBinaryState $ defaultView cfg
   chan <- newBChan (channelSize cfg)
-  appState <- restore $ initialState chan cfg
   let buildVty = Vty.mkVty Vty.defaultConfig
   vty <- buildVty
-  appState' <- Brick.customMain vty buildVty (Just chan) app appState
-  when (appState' ^. asRelaunch) $
-    Dyre.relaunchMaster Nothing
+  appState <- Brick.customMain vty buildVty (Just chan) app (initialState chan cfg)
+  when (appState ^. asRelaunch) $ Dyre.relaunchMaster Nothing
 
 showError :: Config -> String -> Config
 showError cfg s = cfg { dyreError = Just s }
