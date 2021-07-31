@@ -14,6 +14,7 @@
 module Annalise (
   Config( engineExecutable
         , engineArgs
+        , engineStartupTimeout
         , channelSize
         , theme
         , chessboardKeymap
@@ -22,6 +23,7 @@ module Annalise (
         , onStartup
         , defaultView
         )
+, sec
 , ViewName(..)
 , defaultConfig
 , defaultTheme
@@ -41,16 +43,19 @@ import           Brick.Focus                  (FocusRing, focusGetCurrent,
                                                focusRing, focusRingCursor,
                                                focusSetCurrent, withFocusRing)
 import qualified Brick.Main                   as Brick
-import           Brick.Types                  (Padding(..), BrickEvent (AppEvent, VtyEvent),
+import           Brick.Types                  (BrickEvent (AppEvent, VtyEvent),
                                                EventM, Location (..), Next,
+                                               Padding (..),
                                                ViewportType (Both, Horizontal, Vertical),
                                                Widget, handleEventLensed)
 import           Brick.Widgets.Border         (border, borderWithLabel)
 import           Brick.Widgets.Center         (hCenter)
 import           Brick.Widgets.Chess
-import           Brick.Widgets.Core           (padTop, emptyWidget, padBottom, padLeft, padRight, fill, hBox, hLimit, showCursor,
-                                               str, strWrap, txt, txtWrap, vBox,
-                                               vLimit, viewport, (<+>), (<=>))
+import           Brick.Widgets.Core           (emptyWidget, fill, hBox, hLimit,
+                                               padBottom, padLeft, padRight,
+                                               padTop, showCursor, str, strWrap,
+                                               txt, txtWrap, vBox, vLimit,
+                                               viewport, (<+>), (<=>))
 import           Brick.Widgets.Edit           (Editor, editContentsL, editor,
                                                getEditContents,
                                                handleEditorEvent, renderEditor)
@@ -66,8 +71,8 @@ import           Control.Concurrent.STM.TChan
 import           Control.Lens                 (Getter, Getting, Lens', assign,
                                                at, from, ix, lens, modifying,
                                                to, use, uses, view, (%=), (%~),
-                                               (&), (.=), (.~), (<>=), (?~),
-                                               (^.), (^?!), (^?))
+                                               (&), (.=), (.~), (<>=), (<>~),
+                                               (?~), (^.), (^?!), (^?))
 import           Control.Monad                (forever, join, void, when)
 import           Control.Monad.IO.Class       (MonadIO (liftIO))
 import           Control.Monad.State          (StateT, evalStateT, execStateT,
@@ -108,22 +113,23 @@ import           Paths_annalise               (getLibDir)
 import           Skylighting
 import           System.Directory             (doesFileExist)
 import           Time.Rational                (KnownDivRat)
-import           Time.Units                   (Microsecond, Time, sec)
+import           Time.Units                   (Microsecond, Second, Time, sec)
 
 data Config = Config
-  { engineExecutable   :: FilePath
-  , engineArgs         :: [String]
-  , channelSize        :: Int
-  , theme              :: Brick.AttrMap
-  , helpKeymap :: Keymap
-  , chessboardKeymap   :: Keymap
-  , explorerKeymap     :: Keymap
-  , configEditorKeymap :: Keymap
-  , globalKeymap       :: Keymap
-  , onStartup          :: Action ()
-  , defaultView        :: ViewName
-  , configFile         :: FilePath
-  , dyreError          :: Maybe String
+  { engineExecutable     :: FilePath
+  , engineArgs           :: [String]
+  , engineStartupTimeout :: Time Second
+  , channelSize          :: Int
+  , theme                :: Brick.AttrMap
+  , helpKeymap           :: Keymap
+  , chessboardKeymap     :: Keymap
+  , explorerKeymap       :: Keymap
+  , configEditorKeymap   :: Keymap
+  , globalKeymap         :: Keymap
+  , onStartup            :: Action ()
+  , defaultView          :: ViewName
+  , configFile           :: FilePath
+  , dyreError            :: Maybe String
   }
 
 class HasTheme a where
@@ -173,6 +179,7 @@ defaultConfig :: Config
 defaultConfig = Config { .. } where
   engineExecutable = "stockfish"
   engineArgs = []
+  engineStartupTimeout = sec 5
   channelSize = 20
   theme = defaultTheme breezeDark
   helpKeymap = defaultHelpKeymap
@@ -192,6 +199,7 @@ commandLine cfg = Config <$>
           <> showDefault <> value (engineExecutable cfg)
           <> help "Path to the UCI engine executable") <*>
   pure (engineArgs cfg) <*>
+  pure (engineStartupTimeout cfg) <*>
   option auto (long "channel-size"
             <> metavar "INT"
             <> help "Event channel size"
@@ -211,7 +219,8 @@ commandLine cfg = Config <$>
 
 renderHelp s = [ui] where
   ui = header <=> vp where
-    header = border $ padLeft (Pad 3) $ padRight (Pad 3) $ hCenter $ txt "annalise help"
+    header = hCenter . border . padLeft (Pad 3) . padRight (Pad 3) $
+             txt "annalise help"
     vp = viewport Help Vertical content
     content = vBox $ padTop (Pad 1) . r <$>
       [ s ^. asConfig . globalKeymapL
@@ -224,24 +233,27 @@ renderHelp s = [ui] where
 
 ppVtyEvent :: Vty.Event -> Text
 ppVtyEvent (Vty.EvKey k mods) = Text.intercalate "-" $
-  (ppMod <$> mods) <> [ppKey k]
+  fmap ppMod mods <> [ppKey k]
 
-ppKey (Vty.KChar c) = Text.singleton c
-ppKey (Vty.KFun n) = Text.pack $ "<F" <> show n <> ">"
-ppKey Vty.KRight = "<Right>"
-ppKey Vty.KLeft = "<Left"
-ppKey Vty.KUp = "<Up>"
-ppKey Vty.KDown = "<Down>"
-ppKey Vty.KEnter = "<Enter>"
-ppKey Vty.KBS = "<Backspace>"
-ppKey Vty.KEsc = "ESC"
+ppKey :: Vty.Key -> Text
+ppKey (Vty.KChar '\t') = "<Tab>"
+ppKey (Vty.KChar c)    = Text.singleton c
+ppKey Vty.KRight       = "<Right>"
+ppKey Vty.KLeft        = "<Left>"
+ppKey Vty.KUp          = "<Up>"
+ppKey Vty.KDown        = "<Down>"
+ppKey Vty.KEnter       = "<Enter>"
+ppKey Vty.KBS          = "<Backspace>"
+ppKey Vty.KEsc         = "<Escape>"
+ppKey Vty.KDel         = "<Delete>"
+ppKey (Vty.KFun n)     = Text.pack $ "<F" <> show n <> ">"
 
 ppMod Vty.MMeta = "M"
 ppMod Vty.MCtrl = "C"
 
 helpUp, helpDown :: Action ()
-helpUp = lift $ Brick.vScrollBy (Brick.viewportScroll Help) (-1)
-helpDown = lift $ Brick.vScrollBy (Brick.viewportScroll Help) 1
+helpUp = vScrollBy Help (-1)
+helpDown = vScrollBy Help 1
 
 defaultHelpKeymap :: Keymap
 defaultHelpKeymap = Map.fromList
@@ -309,7 +321,7 @@ withFocusRing' s v f a = withFocusRing (s ^?! asViewFocus . ix v)
 
 explorerHandler :: EventHandler
 explorerHandler = EventHandler (asConfig . explorerKeymapL) $ \e -> do
-  message $ "Unbound key: " <> show e
+  message $ UnboundEvent e
   continue
 
 explorerPrev, explorerNext, explorerFirstChild, explorerParent :: Action ()
@@ -356,7 +368,7 @@ mkAnalyser Config{..} =
  where
   mk e = Analyser e Nothing Nothing
   silence = const $ pure ()
-  tout = sec 5
+  tout = engineStartupTimeout
 
 toggleAnalyser :: Action ()
 toggleAnalyser = do
@@ -422,7 +434,7 @@ haskellSyntax :: Syntax
 haskellSyntax = fromJust $ "haskell" `lookupSyntax` defaultSyntaxMap
 
 renderView :: ViewName -> AppState -> [Widget Name]
-renderView HelpView = renderHelp
+renderView HelpView         = renderHelp
 renderView ChessboardView   = renderGame
 renderView ExplorerView     = renderExplorer
 renderView ConfigEditorView = renderConfigEditor
@@ -478,11 +490,19 @@ instance Message Text where
 instance Message String where
   message = message . Text.pack
 
+data Info = UnboundEvent Vty.Event
+          | WroteFile FilePath
+          deriving (Eq, Generic, Read, Show)
+
+instance Message Info where
+  message (UnboundEvent e) = message $ "Unbound event: " <> ppVtyEvent e
+  message (WroteFile fp)   = message $ "Wrote " <> fp
+
 writeConfigFile :: Action ()
 writeConfigFile = do
   fp <- use configFileL
   liftIO . ByteString.writeFile fp . Text.encodeUtf8 =<< use configEditorText
-  message $ "Wrote " <> fp
+  message $ WroteFile fp
 
 reloadConfigFile :: Bool -> Action ()
 reloadConfigFile verbose = do
@@ -499,33 +519,61 @@ gotoBeginningOfConfig, gotoEndOfConfig :: Action ()
 gotoBeginningOfConfig = modifying (asConfigEditor . editContentsL) Zipper.gotoBOF
 gotoEndOfConfig       = modifying (asConfigEditor . editContentsL) Zipper.gotoEOF
 
+vScrollBy :: Name -> Int -> Action ()
+vScrollBy n = lift . Brick.vScrollBy (Brick.viewportScroll n)
+
+scrollRebuildErrorUp, scrollRebuildErrorDown :: Action ()
+scrollRebuildErrorUp = vScrollBy RebuildError (-1)
+scrollRebuildErrorDown = vScrollBy RebuildError 1
+
 continue :: Action (Next AppState)
-continue = get >>= lift . Brick.continue
+continue = lift . Brick.continue =<< get
 
 relaunch :: Action (Next AppState)
 relaunch = do
+  persist
   asRelaunch .= True
   quit
 
 quit :: Action (Next AppState)
-quit = get >>= lift . Brick.halt
+quit = lift . Brick.halt =<< get
 
 defaultConfigEditorKeymap :: Keymap
 defaultConfigEditorKeymap = Map.fromList
   [ ( Vty.EvKey (Vty.KChar 'l') [Vty.MCtrl]
-    , ("Save and relaunch", writeConfigFile *> relaunch)
+    , ( "Save and relaunch"
+      , writeConfigFile *> relaunch
+      )
     )
   , ( Vty.EvKey (Vty.KChar 's') [Vty.MCtrl]
-    , ("Write configuration to disk", writeConfigFile *> continue)
+    , ( "Write configuration to disk"
+      , writeConfigFile *> continue
+      )
     )
   , ( Vty.EvKey (Vty.KChar 'r') [Vty.MCtrl]
-    , ("Revert", reloadConfigFile True *> continue)
+    , ( "Revert from disk or default"
+      , reloadConfigFile True *> continue
+      )
     )
   , ( Vty.EvKey (Vty.KChar '<') [Vty.MMeta]
-    , ("Go to beginning of file", gotoBeginningOfConfig *> continue)
+    , ( "Go to beginning of configuration"
+      , gotoBeginningOfConfig *> continue
+      )
     )
   , ( Vty.EvKey (Vty.KChar '>') [Vty.MMeta]
-    , ("Go to end o f file", gotoEndOfConfig *> continue)
+    , ( "Go to end of configuration"
+      , gotoEndOfConfig *> continue
+      )
+    )
+  , ( Vty.EvKey (Vty.KChar 'n') [Vty.MMeta]
+    , ( "Scroll error down"
+      , scrollRebuildErrorDown *> continue
+      )
+    )
+  , ( Vty.EvKey (Vty.KChar 'p') [Vty.MMeta]
+    , ( "Scroll error up"
+      , scrollRebuildErrorUp *> continue
+      )
     )
   ]
 
@@ -572,6 +620,9 @@ defaultChessboardKeymap = Map.fromList $
    , ( Vty.EvKey (Vty.KChar 'r') [Vty.MCtrl]
      , ("Reset game", resetGame *> continue)
      )
+   , ( Vty.EvKey Vty.KDel []
+     , ("Takeback", takeback *> continue)
+     )
    ] <>
   ) $
   "abcdefgh12345678knqrxo" <&> \c ->
@@ -581,26 +632,31 @@ defaultChessboardKeymap = Map.fromList $
 
 chessboardHandler :: EventHandler
 chessboardHandler = EventHandler chessboardKeymapL $ \e -> do
-  message $ "Unbound: " <> show e
+  message $ UnboundEvent e
   continue
 
 resetGame :: Action ()
-resetGame = do
-  stopped <- stopSearch
-  asGame .= newGame
-  when stopped $ startSearch
+resetGame = changeGame $ asGame .= newGame
 
 clearPlyInput :: Action ()
 clearPlyInput = asGame . gInput .= ""
 
 plyInput :: Char -> Action ()
 plyInput c = do
-  asGame . gInput <>= pure c
-  uses asGame selectedPly >>= \case
-    Just ply -> do
-      clearPlyInput
-      addPly ply
-    Nothing -> pure ()
+  ok <- validPlyInput c <$> use asGame
+  if ok then do
+    asGame . gInput <>= pure c
+    uses asGame selectedPly >>= \case
+      Just ply -> do
+        clearPlyInput
+        addPly ply
+      Nothing -> pure ()
+  else use (asGame . gInput) >>= \case
+    "" -> message $ "No ply starts with '" <> Text.singleton c <> "'"
+    _  -> message $ "No ply continues with '" <> Text.singleton c <> "'"
+
+validPlyInput :: Char -> Game -> Bool
+validPlyInput c = not . null . selectedPlies . (gInput <>~ [c])
 
 plyInputBS :: Action ()
 plyInputBS = modifying (asGame . gInput) $ \case
@@ -614,23 +670,36 @@ selectedPly g = if ok then Just $ head plies else Nothing where
 
 selectedPlies :: Game -> [Ply]
 selectedPlies g =
-  filter ((input `isPrefixOf`) . fmap toLower . toSAN pos) $ legalPlies pos
+  filter ((input `isPrefixOf`) . map toLower . toSAN pos) $ legalPlies pos
  where
   pos = currentPosition g
   input = g ^. gInput
 
-dispatch :: EventHandler -> AppState -> Vty.Event -> EventM Name (Next AppState)
-dispatch (EventHandler keymapL fallback) s e = evalStateT action s where
-  action = clearMessage *> case Map.lookup e (s ^. globalKeymapL)
-                            <|> Map.lookup e (s ^. keymapL) of
-    Just (_, a)  -> a
-    Nothing -> fallback e
+changeGame :: Action a -> Action a
+changeGame action = do
+  stopped <- stopSearch
+  a <- action
+  when stopped $ startSearch
+  pure a
 
-handleViewEvent :: ViewName -> AppState -> Vty.Event -> EventM Name (Next AppState)
-handleViewEvent HelpView = dispatch helpHandler
-handleViewEvent ChessboardView   = dispatch chessboardHandler
-handleViewEvent ExplorerView     = dispatch explorerHandler
-handleViewEvent ConfigEditorView = dispatch configEditorHandler
+takeback :: Action ()
+takeback = changeGame . modifying (asGame . gPlies) $ \case
+  [] -> []
+  xs -> init xs
+
+handleViewEvent :: ViewName -> Name
+                -> AppState -> Vty.Event -> EventM Name (Next AppState)
+handleViewEvent = go where
+  go HelpView         _ = dispatch helpHandler
+  go ChessboardView   _ = dispatch chessboardHandler
+  go ExplorerView     _ = dispatch explorerHandler
+  go ConfigEditorView _ = dispatch configEditorHandler
+  dispatch (EventHandler keymapL fallback) s e = evalStateT action s where
+    action = do
+      clearMessage
+      case Map.lookup e (s ^. globalKeymapL) <|> Map.lookup e (s ^. keymapL) of
+        Just (_, a) -> a
+        Nothing     -> fallback e
 
 ------------------------------------------------------------------------------
 
@@ -698,7 +767,7 @@ enter = do
         plies <- legalPlies <$> uses asGame currentPosition
         case filter p plies of
           [pl] -> addPly pl
-          _ -> assign (asGame . gFrom) $ Just dst
+          _    -> assign (asGame . gFrom) $ Just dst
       Just src -> use (asGame . gCursor) >>= \dst -> do
         let p pl = plySource pl == src && plyTarget pl == dst
         plies <- legalPlies <$> uses asGame currentPosition
@@ -839,7 +908,9 @@ app = Brick.App { .. } where
   appStartEvent = execStateT $ reloadConfigFile False >> join (use startupAction)
   appDraw s = renderView (viewName s) s
   appHandleEvent s = go where
-    go (VtyEvent e) = handleViewEvent (viewName s) s e
+    go (VtyEvent e) = handleViewEvent vn n s e where
+      vn = viewName s
+      n = fromJust . focusGetCurrent $ s ^?! asViewFocus . ix vn
     go (AppEvent i) = case (find isScore i, find isPV i) of
       (Just score, Just (UCI.PV pv)) -> Brick.continue $
         s & asAnalyser . traverse . aPV .~ Just pv
@@ -857,15 +928,32 @@ isScore _           = False
 isPV UCI.PV{} = True
 isPV _        = False
 
+data Persistent = Persistent ViewName
+                  deriving (Generic)
+
+instance Binary Persistent
+
+persist :: Action ()
+persist = do
+  vn <- use $ asFocusL . to focusGetCurrent . to fromJust
+  liftIO . Dyre.saveBinaryState $ Persistent vn
+
+restore :: AppState -> IO AppState
+restore s = do
+  (Persistent vn) <- Dyre.restoreBinaryState $ Persistent
+                     (s ^. asConfig . defaultViewL)
+  pure $ s & asFocusL %~ focusSetCurrent vn
+
 main :: Config -> IO ()
 main inCfg = do
   cfg <- execParser $ info (commandLine inCfg <**> helper) $ briefDesc
+  vn <- Dyre.restoreBinaryState $ defaultView cfg
   chan <- newBChan (channelSize cfg)
+  appState <- restore $ initialState chan cfg
   let buildVty = Vty.mkVty Vty.defaultConfig
   vty <- buildVty
-  appState <- Brick.customMain vty buildVty (Just chan)
-              app (initialState chan cfg)
-  when (appState ^. asRelaunch) $
+  appState' <- Brick.customMain vty buildVty (Just chan) app appState
+  when (appState' ^. asRelaunch) $
     Dyre.relaunchMaster Nothing
 
 showError :: Config -> String -> Config
