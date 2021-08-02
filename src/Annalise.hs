@@ -1,22 +1,23 @@
-{-# LANGUAGE DeriveGeneric        #-}
-{-# LANGUAGE FlexibleContexts     #-}
-{-# LANGUAGE FlexibleInstances    #-}
-{-# LANGUAGE LambdaCase           #-}
-{-# LANGUAGE MultiWayIf           #-}
-{-# LANGUAGE NamedFieldPuns       #-}
-{-# LANGUAGE OverloadedStrings    #-}
-{-# LANGUAGE RankNTypes           #-}
-{-# LANGUAGE RecordWildCards      #-}
-{-# LANGUAGE TemplateHaskell      #-}
-{-# LANGUAGE TupleSections        #-}
-{-# LANGUAGE TypeSynonymInstances #-}
-{-# LANGUAGE ViewPatterns         #-}
+{-# LANGUAGE GADTs #-}
+{-# LANGUAGE DeriveGeneric     #-}
+{-# LANGUAGE FlexibleContexts  #-}
+{-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE LambdaCase        #-}
+{-# LANGUAGE MultiWayIf        #-}
+{-# LANGUAGE NamedFieldPuns    #-}
+{-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE RankNTypes        #-}
+{-# LANGUAGE RecordWildCards   #-}
+{-# LANGUAGE TemplateHaskell   #-}
+{-# LANGUAGE TupleSections     #-}
+{-# LANGUAGE ViewPatterns      #-}
 module Annalise (
   Config( engineExecutable
         , engineArgs
         , engineStartupTimeout
         , channelSize
         , theme
+        , pgnDirectory
         , chessboardKeymap
         , configEditorKeymap
         , globalKeymap
@@ -48,17 +49,22 @@ import           Brick.Types                  (BrickEvent (AppEvent, VtyEvent),
                                                Padding (..),
                                                ViewportType (Both, Horizontal, Vertical),
                                                Widget, handleEventLensed)
+import Data.Proxy
 import           Brick.Widgets.Border         (border, borderWithLabel)
-import           Brick.Widgets.Center         (hCenter)
+import           Brick.Widgets.Center         (hCenter, vCenter)
 import           Brick.Widgets.Chess
 import           Brick.Widgets.Core           (emptyWidget, fill, hBox, hLimit,
-                                               padBottom, padLeft, padRight,
-                                               padTop, showCursor, str, strWrap,
-                                               txt, txtWrap, vBox, vLimit,
-                                               viewport, (<+>), (<=>))
+                                               hLimitPercent, padBottom,
+                                               padLeft, padRight, padTop,
+                                               showCursor, str, strWrap, txt,
+                                               txtWrap, vBox, vLimit,
+                                               vLimitPercent, viewport, (<+>),
+                                               (<=>))
 import           Brick.Widgets.Edit           (Editor, editContentsL, editor,
                                                getEditContents,
                                                handleEditorEvent, renderEditor)
+import           Brick.Widgets.FileBrowser
+import qualified Brick.Widgets.FileBrowser as Brick
 import qualified Brick.Widgets.List           as Brick
 import           Brick.Widgets.Skylighting    (attrMappingsForStyle, highlight)
 import qualified Config.Dyre                  as Dyre
@@ -68,11 +74,14 @@ import           Control.Applicative          ((<|>))
 import           Control.Concurrent           (ThreadId, forkIO, killThread)
 import           Control.Concurrent.STM       (atomically)
 import           Control.Concurrent.STM.TChan
-import           Control.Lens                 (Getter, Getting, Lens', assign,
-                                               at, from, ix, lens, modifying,
-                                               to, use, uses, view, (%=), (%~),
-                                               (&), (.=), (.~), (<>=), (<>~),
-                                               (?~), (^.), (^?!), (^?))
+import           Control.Lens                 (reuse, _Wrapped, preuse, Prism', prism', Getter, Getting, Lens',
+                                               LensLike', _Just, assign, at,
+                                               from, ix, lens, modifying, to,
+                                               traverseOf, use, uses, view,
+                                               (%=), (%~), (&), (.=), (.~),
+                                               (<>=), (<>~), (?~), (^.), (^?!),
+                                               (^?))
+import           Control.Lens.TH              (makeLenses)
 import           Control.Monad                (forever, join, void, when)
 import           Control.Monad.IO.Class       (MonadIO (liftIO))
 import           Control.Monad.State          (StateT, evalStateT, execStateT,
@@ -83,10 +92,10 @@ import           Data.ByteString              (ByteString)
 import qualified Data.ByteString              as ByteString
 import           Data.Char                    (toLower)
 import           Data.FileEmbed               (embedFile)
-import           Data.Foldable                (foldl', for_)
+import           Data.Foldable                (foldl', for_, toList)
 import           Data.Functor                 ((<&>))
-import           Data.List                    (elemIndex, find, intersperse,
-                                               isPrefixOf, sort)
+import           Data.List                    (elemIndex, find, intercalate,
+                                               intersperse, isPrefixOf, sort)
 import           Data.List.NonEmpty           (NonEmpty)
 import qualified Data.List.NonEmpty           as NonEmpty
 import           Data.Map                     (Map)
@@ -104,248 +113,62 @@ import qualified Data.Vector                  as Vector
 import qualified Data.Vector.Unboxed          as Unboxed
 import           GHC.Generics                 (Generic)
 import           Game.Chess
+import Game.Chess.PGN (PGN, readPGNFile)
+import qualified Game.Chess.PGN               as PGN
 import           Game.Chess.Polyglot
 import           Game.Chess.SAN
 import qualified Game.Chess.UCI               as UCI
 import qualified Graphics.Vty                 as Vty
 import           Options.Applicative          hiding (str)
 import           Paths_annalise               (getLibDir)
-import           Skylighting
+import           Skylighting                  hiding (Color)
 import           System.Directory             (doesFileExist)
 import           Time.Rational                (KnownDivRat)
 import           Time.Units                   (Microsecond, Second, Time, sec)
 
-data Config = Config
-  { engineExecutable     :: FilePath
-  , engineArgs           :: [String]
-  , engineStartupTimeout :: Time Second
-  , channelSize          :: Int
-  , theme                :: Brick.AttrMap
-  , helpKeymap           :: Keymap
-  , chessboardKeymap     :: Keymap
-  , explorerKeymap       :: Keymap
-  , configEditorKeymap   :: Keymap
-  , globalKeymap         :: Keymap
-  , onStartup            :: Action ()
-  , defaultView          :: ViewName
-  , configFile           :: FilePath
-  , dyreError            :: Maybe String
-  }
+data ViewName = HelpView
+              | ChessboardView
+              | ExplorerView
+              | ConfigEditorView
+              deriving (Bounded, Enum, Eq, Generic, Ord, Read, Show)
 
-class HasTheme a where
-  themeL :: Lens' a Brick.AttrMap
+instance Binary ViewName
 
-instance HasTheme Config where
-  themeL = lens theme $ \s b -> s { theme = b }
+data Name = Help
+          | Chessboard
+          | PlyList | PGNBrowser | GameList
+          | ConfigEditor | RebuildError
+          deriving (Eq, Ord, Read, Show)
 
-class HasConfigFile a where
-  configFileL :: Getter a FilePath
+type AppEvent = [UCI.Info]
 
-instance HasConfigFile Config where
-  configFileL = to configFile
+data Game = Game
+  { _gInitial :: Position
+  , _gPlies   :: [Ply]
+  , _gInput   :: String
+  , _gFrom    :: Maybe Square
+  , _gCursor  :: Square
+  } deriving (Generic)
 
-helpKeymapL :: Lens' Config Keymap
-helpKeymapL = lens helpKeymap $ \s b -> s { helpKeymap = b }
+instance Binary Game
 
-class HasChessboardKeymap a where chessboardKeymapL :: Lens' a Keymap
-instance HasChessboardKeymap Config where
-  chessboardKeymapL = lens chessboardKeymap $ \s b -> s { chessboardKeymap = b }
+gInitial :: Lens' Game Position
+gInitial = lens _gInitial $ \s b -> s { _gInitial = b }
 
-class HasExplorerKeymap a where explorerKeymapL :: Lens' a Keymap
-instance HasExplorerKeymap Config where
-  explorerKeymapL = lens explorerKeymap $ \s b -> s { explorerKeymap = b }
+gPlies :: Lens' Game [Ply]
+gPlies = lens _gPlies $ \s b -> s { _gPlies = b }
 
-class HasConfigEditorKeymap a where configEditorKeymapL :: Lens' a Keymap
-instance HasConfigEditorKeymap Config where
-  configEditorKeymapL = lens configEditorKeymap $ \s b ->
-    s { configEditorKeymap = b }
+gInput :: Lens' Game String
+gInput = lens _gInput $ \s b -> s { _gInput = b }
 
-class HasGlobalKeymap a where globalKeymapL :: Lens' a Keymap
-instance HasGlobalKeymap Config where
-  globalKeymapL = lens globalKeymap $ \s b -> s { globalKeymap = b }
+gFrom :: Lens' Game (Maybe Square)
+gFrom = lens _gFrom $ \s b -> s { _gFrom = b }
 
-class HasStartupAction a where startupAction :: Getter a (Action ())
-instance HasStartupAction Config where
-  startupAction = to onStartup
+gCursor :: Lens' Game Square
+gCursor = lens _gCursor $ \s b -> s { _gCursor = b }
 
-defaultViewL :: Lens' Config ViewName
-defaultViewL = lens defaultView $ \s b -> s { defaultView = b }
-
-defaultTheme :: Style -> Brick.AttrMap
-defaultTheme sty = Brick.attrMap Vty.defAttr $
-  [] <> attrMappingsForStyle sty
-
-defaultConfig :: Config
-defaultConfig = Config { .. } where
-  engineExecutable = "stockfish"
-  engineArgs = []
-  engineStartupTimeout = sec 5
-  channelSize = 20
-  theme = defaultTheme breezeDark
-  helpKeymap = defaultHelpKeymap
-  chessboardKeymap = defaultChessboardKeymap
-  explorerKeymap = defaultExplorerKeymap
-  configEditorKeymap = defaultConfigEditorKeymap
-  globalKeymap = defaultGlobalKeymap
-  onStartup = pure ()
-  defaultView = ChessboardView
-  configFile = undefined
-  dyreError = Nothing
-
-commandLine :: Config -> Parser Config
-commandLine cfg = Config <$>
-  strOption (long "engine-executable"
-          <> metavar "NAME"
-          <> showDefault <> value (engineExecutable cfg)
-          <> help "Path to the UCI engine executable") <*>
-  pure (engineArgs cfg) <*>
-  pure (engineStartupTimeout cfg) <*>
-  option auto (long "channel-size"
-            <> metavar "INT"
-            <> help "Event channel size"
-            <> showDefault <> value (channelSize cfg)) <*>
-  pure (theme cfg) <*>
-  pure (helpKeymap cfg) <*>
-  pure (chessboardKeymap cfg) <*>
-  pure (explorerKeymap cfg) <*>
-  pure (configEditorKeymap cfg) <*>
-  pure (globalKeymap cfg) <*>
-  pure (onStartup cfg) <*>
-  pure (defaultView cfg) <*>
-  pure (configFile cfg) <*>
-  pure (dyreError cfg)
-
-------------------------------------------------------------------------------
-
-renderHelp s = [ui] where
-  ui = header <=> vp where
-    header = hCenter . border . padLeft (Pad 3) . padRight (Pad 3) $
-             txt "annalise help"
-    vp = viewport Help Vertical content
-    content = vBox $ padTop (Pad 1) . r <$>
-      [ s ^. asConfig . globalKeymapL
-      , s ^. asConfig . chessboardKeymapL
-      , s ^. asConfig . explorerKeymapL
-      , s ^. asConfig . configEditorKeymapL
-      ]
-    r = Map.foldlWithKey f emptyWidget where
-      f w k (d, _) = w <=> ((vLimit 1 . hLimit 20 $ txt (ppVtyEvent k) <+> fill ' ') <+> txtWrap d)
-
-ppVtyEvent :: Vty.Event -> Text
-ppVtyEvent (Vty.EvKey k mods) = Text.intercalate "-" $
-  fmap ppMod mods <> [ppKey k]
-
-ppKey :: Vty.Key -> Text
-ppKey (Vty.KChar '\t') = "<Tab>"
-ppKey (Vty.KChar c)    = Text.singleton c
-ppKey Vty.KRight       = "<Right>"
-ppKey Vty.KLeft        = "<Left>"
-ppKey Vty.KUp          = "<Up>"
-ppKey Vty.KDown        = "<Down>"
-ppKey Vty.KEnter       = "<Enter>"
-ppKey Vty.KBS          = "<Backspace>"
-ppKey Vty.KEsc         = "<Escape>"
-ppKey Vty.KDel         = "<Delete>"
-ppKey (Vty.KFun n)     = Text.pack $ "<F" <> show n <> ">"
-
-ppMod Vty.MMeta = "M"
-ppMod Vty.MCtrl = "C"
-
-helpUp, helpDown :: Action ()
-helpUp = vScrollBy Help (-1)
-helpDown = vScrollBy Help 1
-
-defaultHelpKeymap :: Keymap
-defaultHelpKeymap = Map.fromList
-  [ ( Vty.EvKey Vty.KUp [], ("Scroll up", helpUp *> continue) )
-  , ( Vty.EvKey Vty.KDown [], ("Scroll down", helpDown *> continue) )
-  ]
-
-helpHandler :: EventHandler
-helpHandler = EventHandler (asConfig . helpKeymapL) $ \e ->
-  continue
-
-----------------------------------------------------------------------------------
-
-data Explorer = Explorer
-  { _eInitial :: Position
-  , _eTreePos :: TreePos Full (NonEmpty Ply)
-  }
-
-eInitial :: Lens' Explorer Position
-eInitial = lens _eInitial $ \s b -> s { _eInitial = b }
-
-eTreePos :: Lens' Explorer (TreePos Full (NonEmpty Ply))
-eTreePos = lens _eTreePos $ \s b -> s { _eTreePos = b }
-
-defaultExplorer :: Explorer
-defaultExplorer = Explorer { .. } where
-  _eInitial = startpos
-  _eTreePos = fromJust . nextTree . fromForest $
-              pathTree <$> bookForest defaultBook _eInitial
-
-pathTree :: Tree a -> Tree (NonEmpty a)
-pathTree = foldTree $ \a -> Node (pure a) . (fmap . fmap) (NonEmpty.cons a)
-
-ePlies :: Getter Explorer (NonEmpty Ply)
-ePlies = eTreePos . to label
-
-eCurrentPosition, ePreviousPosition :: Explorer -> Position
-eCurrentPosition e = foldl' unsafeDoPly (e^.eInitial) (e^.ePlies)
-ePreviousPosition e = foldl' unsafeDoPly (e^.eInitial) (e^.ePlies.to NonEmpty.init)
-
-elemList :: Eq a => n -> a -> [a] -> Brick.List n a
-elemList n x xs = Brick.list n (Vector.fromList xs) 1
-                & Brick.listSelectedL .~ i where
-  i = x `elemIndex` xs
-
-ePlyList :: Explorer -> Brick.List Name Ply
-ePlyList (view eTreePos -> tp) = elemList PlyList ply plies where
-  ply = NonEmpty.last . label $ tp
-  plies = fmap (NonEmpty.last . rootLabel) . forest $ tp
-
-renderExplorer :: AppState -> [Widget Name]
-renderExplorer s = go $ view asExplorer s where
-  go e = [ui] where
-    ui = (hLimit 9 list <+> hLimit 23 board <+> var)
-     <=> fill ' '
-     <=> renderMessage s
-    list = withFocusRing' s ExplorerView
-      (Brick.renderList (drawPly (ePreviousPosition e))) (ePlyList e)
-    drawPly p foc = putCursorIf foc PlyList (0, 0) . str . toSAN p
-    board = renderPosition Chessboard (eCurrentPosition e) (Just (color (ePreviousPosition e))) Nothing english True
-    var = strWrap $ varToSAN (e ^. eInitial) (e ^. eTreePos . to label)
-
-withFocusRing' s v f a = withFocusRing (s ^?! asViewFocus . ix v)
-  f a
-
-explorerHandler :: EventHandler
-explorerHandler = EventHandler (asConfig . explorerKeymapL) $ \e -> do
-  message $ UnboundEvent e
-  continue
-
-explorerPrev, explorerNext, explorerFirstChild, explorerParent :: Action ()
-explorerPrev = asExplorer . eTreePos %= (fromMaybe <*> TreePos.prev)
-explorerNext = asExplorer . eTreePos %= (fromMaybe <*> TreePos.next)
-explorerFirstChild = asExplorer . eTreePos %= (fromMaybe <*> TreePos.firstChild)
-explorerParent = asExplorer . eTreePos %= (fromMaybe <*> TreePos.parent)
-
-defaultExplorerKeymap = Map.fromList
-  [ ( Vty.EvKey Vty.KDown []
-    , ("Select next move", explorerNext *> continue)
-    )
-  , ( Vty.EvKey Vty.KUp []
-    , ("Select previous move", explorerPrev *> continue)
-    )
-  , ( Vty.EvKey Vty.KRight []
-    , ("First child", explorerFirstChild *> continue)
-    )
-  , ( Vty.EvKey Vty.KLeft []
-    , ("Parent", explorerParent *> continue)
-    )
-  ]
-
-------------------------------------------------------------------------------
+newGame :: Game
+newGame = Game startpos [] "" Nothing E1
 
 data Analyser = Analyser
   { _aEngine :: UCI.Engine
@@ -369,6 +192,428 @@ mkAnalyser Config{..} =
   mk e = Analyser e Nothing Nothing
   silence = const $ pure ()
   tout = engineStartupTimeout
+
+data Explorer = Explorer
+  { _eInitial     :: Position
+  , _eTreePos     :: TreePos Full (NonEmpty Ply)
+  , _eGameChooser :: Maybe GameChooser
+  }
+
+------------------------------------------------------------------------------
+
+data GameChooser = GameChooser GameChooserStep
+
+cgStep :: Lens' GameChooser GameChooserStep
+cgStep = lens (\(GameChooser a) -> a) $ \(GameChooser _) b -> GameChooser b
+
+data GameChooserStep = ChooseFile (Brick.FileBrowser Name)
+                     | ChooseGame (Brick.List Name PGN.Game)
+
+_ChooseFile :: Prism' GameChooserStep (Brick.FileBrowser Name)
+_ChooseFile = prism' ChooseFile $ \case
+  ChooseFile a -> Just a
+  _ -> Nothing
+
+_ChooseGame :: Prism' GameChooserStep (Brick.List Name PGN.Game)
+_ChooseGame = prism' ChooseGame $ \case
+  ChooseGame a -> Just a
+  _ -> Nothing
+
+newGameChooser :: Action GameChooser
+newGameChooser = GameChooser . ChooseFile <$> newPGNBrowser
+
+chooseGame :: PGN -> GameChooser -> GameChooser
+chooseGame pgn _ = GameChooser . ChooseGame $
+  Brick.list GameList (Vector.fromList $ pgn ^. _Wrapped) 1
+
+------------------------------------------------------------------------------
+
+eInitial :: Lens' Explorer Position
+eInitial = lens _eInitial $ \s b -> s { _eInitial = b }
+
+eTreePos :: Lens' Explorer (TreePos Full (NonEmpty Ply))
+eTreePos = lens _eTreePos $ \s b -> s { _eTreePos = b }
+
+eGameChooser :: Lens' Explorer (Maybe GameChooser)
+eGameChooser = lens _eGameChooser $ \s b -> s { _eGameChooser = b }
+
+pathTree :: Tree a -> Tree (NonEmpty a)
+pathTree = foldTree $ \a -> Node (pure a) . (fmap . fmap) (NonEmpty.cons a)
+
+defaultExplorer :: Explorer
+defaultExplorer = Explorer { .. } where
+  _eInitial = startpos
+  _eTreePos = fromJust . nextTree . fromForest $
+              pathTree <$> bookForest defaultBook _eInitial
+  _eGameChooser = Nothing
+
+data AppState = AppState
+  { _asChannel      :: BChan AppEvent
+  , _asConfig       :: Config
+  , _asFocus        :: FocusRing ViewName
+  , _asViewFocus    :: Map ViewName (FocusRing Name)
+  , _asGame         :: Game
+  , _asAnalyser     :: Maybe Analyser
+  , _asExplorer     :: Explorer
+  , _asConfigEditor :: Editor Text Name
+  , _asMessage      :: Maybe Text
+  , _asRelaunch     :: Bool
+  }
+
+type Action = StateT AppState (EventM Name)
+
+data Binding = Binding
+  { bindingDescription :: Text
+  , bindingGuard       :: Action Bool
+  , bindingAction      :: Action (Next AppState)
+  }
+
+simpleBinding :: Text -> Action (Next AppState) -> Binding
+simpleBinding desc = Binding desc (pure True)
+
+type Keymap = Map Vty.Event Binding
+
+data Config = Config
+  { engineExecutable     :: FilePath
+  , engineArgs           :: [String]
+  , engineStartupTimeout :: Time Second
+  , channelSize          :: Int
+  , theme                :: Brick.AttrMap
+  , helpKeymap           :: Keymap
+  , chessboardKeymap     :: Keymap
+  , explorerKeymap       :: Keymap
+  , pgnBrowserKeymap     :: Keymap
+  , gameListKeymap :: Keymap
+  , pgnDirectory         :: Maybe FilePath
+  , configEditorKeymap   :: Keymap
+  , globalKeymap         :: Keymap
+  , onStartup            :: Action ()
+  , defaultView          :: ViewName
+  , configFile           :: FilePath
+  , dyreError            :: Maybe String
+  }
+
+themeL :: Lens' Config Brick.AttrMap
+themeL = lens theme $ \s b -> s { theme = b }
+
+configFileL :: Getter Config FilePath
+configFileL = to configFile
+
+helpKeymapL :: Lens' Config Keymap
+helpKeymapL = lens helpKeymap $ \s b -> s { helpKeymap = b }
+
+chessboardKeymapL :: Lens' Config Keymap
+chessboardKeymapL = lens chessboardKeymap $ \s b -> s { chessboardKeymap = b }
+
+explorerKeymapL :: Lens' Config Keymap
+explorerKeymapL = lens explorerKeymap $ \s b -> s { explorerKeymap = b }
+
+pgnBrowserKeymapL :: Getter Config Keymap
+pgnBrowserKeymapL = to pgnBrowserKeymap
+
+gameListKeymapL :: Lens' Config Keymap
+gameListKeymapL = lens gameListKeymap $ \s b -> s { gameListKeymap = b }
+
+pgnDirectoryL :: Lens' Config (Maybe FilePath)
+pgnDirectoryL = lens pgnDirectory $ \s b -> s { pgnDirectory = b }
+
+configEditorKeymapL :: Lens' Config Keymap
+configEditorKeymapL = lens configEditorKeymap $ \s b ->
+  s { configEditorKeymap = b }
+
+globalKeymapL :: Lens' Config Keymap
+globalKeymapL = lens globalKeymap $ \s b -> s { globalKeymap = b }
+
+startupAction :: Getter Config (Action ())
+startupAction = to onStartup
+
+defaultViewL :: Lens' Config ViewName
+defaultViewL = lens defaultView $ \s b -> s { defaultView = b }
+
+defaultTheme :: Style -> Brick.AttrMap
+defaultTheme sty = Brick.attrMap Vty.defAttr $
+  [] <> attrMappingsForStyle sty
+
+defaultConfig :: Config
+defaultConfig = Config { .. } where
+  engineExecutable = "stockfish"
+  engineArgs = []
+  engineStartupTimeout = sec 5
+  channelSize = 20
+  theme = defaultTheme breezeDark
+  helpKeymap = defaultHelpKeymap
+  chessboardKeymap = defaultChessboardKeymap
+  explorerKeymap = defaultExplorerKeymap
+  pgnBrowserKeymap = defaultPgnBrowserKeymap
+  gameListKeymap = defaultGameListKeymap
+  pgnDirectory = Nothing
+  configEditorKeymap = defaultConfigEditorKeymap
+  globalKeymap = defaultGlobalKeymap
+  onStartup = pure ()
+  defaultView = ChessboardView
+  configFile = undefined
+  dyreError = Nothing
+
+commandLine :: Config -> Parser Config
+commandLine cfg = Config <$>
+  strOption (long "engine-executable"
+          <> metavar "NAME"
+          <> showDefault <> value (engineExecutable cfg)
+          <> help "Path to the UCI engine executable") <*>
+  pure (engineArgs cfg) <*>
+  pure (engineStartupTimeout cfg) <*>
+  option auto (long "channel-size"
+            <> metavar "INT"
+            <> help "Event channel size"
+            <> showDefault <> value (channelSize cfg)) <*>
+  pure (theme cfg) <*>
+  pure (helpKeymap cfg) <*>
+  pure (chessboardKeymap cfg) <*>
+  pure (explorerKeymap cfg) <*>
+  pure (pgnBrowserKeymap cfg) <*>
+  pure (gameListKeymap cfg) <*>
+  optional (strOption (long "pgn-directory" <> metavar "DIR" <> case pgnDirectory cfg of { Just dir -> showDefault <> value dir; Nothing -> mempty })) <*>
+  pure (configEditorKeymap cfg) <*>
+  pure (globalKeymap cfg) <*>
+  pure (onStartup cfg) <*>
+  pure (defaultView cfg) <*>
+  pure (configFile cfg) <*>
+  pure (dyreError cfg)
+
+------------------------------------------------------------------------------
+
+renderHelp s = [ui] where
+  ui = header <=> vp where
+    header = hCenter . border . padLeft (Pad 3) . padRight (Pad 3) $
+             txt "annalise help"
+    vp = viewport Help Vertical content
+    content = vBox $ padTop (Pad 1) . r <$>
+      [ s ^. asConfig . globalKeymapL
+      , s ^. asConfig . chessboardKeymapL
+      , s ^. asConfig . explorerKeymapL
+      , s ^. asConfig . configEditorKeymapL
+      ]
+    r = Map.foldlWithKey f emptyWidget where
+      f w k b = w <=> ((vLimit 1 . hLimit 20 $ txt (ppVtyEvent k) <+> fill ' ') <+> txtWrap (bindingDescription b))
+
+ppVtyEvent :: Vty.Event -> Text
+ppVtyEvent (Vty.EvKey k mods) = Text.intercalate "-" $
+  fmap ppMod mods <> [ppKey k]
+
+ppKey :: Vty.Key -> Text
+ppKey (Vty.KChar '\t') = "<Tab>"
+ppKey (Vty.KChar c)    = Text.singleton c
+ppKey Vty.KRight       = "<Right>"
+ppKey Vty.KLeft        = "<Left>"
+ppKey Vty.KUp          = "<Up>"
+ppKey Vty.KDown        = "<Down>"
+ppKey Vty.KEnter       = "<Enter>"
+ppKey Vty.KBS          = "<Backspace>"
+ppKey Vty.KEsc         = "<Escape>"
+ppKey Vty.KDel         = "<Delete>"
+ppKey Vty.KHome        = "<Home>"
+ppKey Vty.KEnd         = "<End>"
+ppKey (Vty.KFun n)     = Text.pack $ "<F" <> show n <> ">"
+
+ppMod Vty.MMeta = "M"
+ppMod Vty.MCtrl = "C"
+
+helpUp, helpDown :: Action ()
+helpUp = vScrollBy Help (-1)
+helpDown = vScrollBy Help 1
+
+defaultHelpKeymap :: Keymap
+defaultHelpKeymap = Map.fromList
+  [ ( Vty.EvKey Vty.KUp []
+    , simpleBinding "Scroll up" $ helpUp *> continue )
+  , ( Vty.EvKey Vty.KDown []
+    , simpleBinding "Scroll down" $ helpDown *> continue )
+  ]
+
+helpHandler :: EventHandler
+helpHandler = EventHandler (asConfig . helpKeymapL) $ const continue
+
+------------------------------------------------------------------------------
+
+newPGNBrowser :: Action (FileBrowser Name)
+newPGNBrowser = use (asConfig . pgnDirectoryL) >>= \dir ->
+  liftIO (newFileBrowser selectNonDirectories PGNBrowser dir) <&>
+  setFileBrowserEntryFilter (Just $ fileExtensionMatch "pgn")
+
+----------------------------------------------------------------------------------
+
+ePlies :: Getter Explorer (NonEmpty Ply)
+ePlies = eTreePos . to label
+
+eCurrentPosition, ePreviousPosition :: Explorer -> Position
+eCurrentPosition e = foldl' unsafeDoPly (e^.eInitial) (e^.ePlies)
+ePreviousPosition e = foldl' unsafeDoPly (e^.eInitial) (e^.ePlies.to NonEmpty.init)
+
+elemList :: Eq a => n -> a -> [a] -> Brick.List n a
+elemList n x xs = Brick.list n (Vector.fromList xs) 1
+                & Brick.listSelectedL .~ i where
+  i = x `elemIndex` xs
+
+ePlyList :: Explorer -> Brick.List Name Ply
+ePlyList (view eTreePos -> tp) = elemList PlyList ply plies where
+  ply = NonEmpty.last . label $ tp
+  plies = fmap (NonEmpty.last . rootLabel) . forest $ tp
+
+renderExplorer :: AppState -> [Widget Name]
+renderExplorer s = go $ view asExplorer s where
+  go e = fb <> [ui] where
+    ui = (hLimit 9 list <+> hLimit 23 board <+> var)
+     <=> fill ' '
+     <=> renderMessage s
+    list = withFocusRing' s ExplorerView
+      (Brick.renderList (drawPly (ePreviousPosition e))) (ePlyList e)
+    drawPly p foc = putCursorIf foc PlyList (0, 0) . str . toSAN p
+    board = renderPosition Chessboard (eCurrentPosition e) (Just (color (ePreviousPosition e))) Nothing english True
+    var = strWrap $ varToSAN (e ^. eInitial) (e ^. eTreePos . to label)
+    fb = case e^.eGameChooser of
+      Just (GameChooser (ChooseFile fb)) ->
+        [renderFileBrowser True fb <=> renderMessage s]
+      Just (GameChooser (ChooseGame l)) ->
+        [Brick.renderList drawSummary True l]
+      Nothing -> []
+    drawSummary foc g = putCursorIf foc GameList (0, 0) $ case g ^. PGN.cgTags of
+      tags ->
+        let w = fromMaybe "''" $ lookup "White" tags
+            b = fromMaybe "''" $ lookup "Black" tags
+            e = fromMaybe "''" $ lookup "Event" tags
+        in txt e <+> txt " - " <+> txt w <+> txt " - " <+> txt b
+
+
+
+withFocusRing' s v f a = withFocusRing (s ^?! asViewFocus . ix v)
+  f a
+
+explorerHandler :: EventHandler
+explorerHandler = EventHandler (asConfig . explorerKeymapL) $ \e -> do
+  message $ UnboundEvent e
+  continue
+
+explorerPrev, explorerNext, explorerFirstChild, explorerParent :: Action ()
+explorerPrev = asExplorer . eTreePos %= (fromMaybe <*> TreePos.prev)
+explorerNext = asExplorer . eTreePos %= (fromMaybe <*> TreePos.next)
+explorerFirstChild = asExplorer . eTreePos %= (fromMaybe <*> TreePos.firstChild)
+explorerParent = asExplorer . eTreePos %= (fromMaybe <*> TreePos.parent)
+
+createGame :: Action ()
+createGame = do
+  pos <- use $ asExplorer . eInitial
+  plies <- use $ asExplorer . ePlies
+  changeGame $ do
+    asGame . gInitial .= pos
+    asGame . gPlies .= toList plies
+    sideToMove <- color <$> uses asGame currentPosition
+    asGame . gCursor .= (if sideToMove == White then E1 else E8)
+  switchView ChessboardView
+
+setViewFocus :: ViewName -> Name -> Action ()
+setViewFocus vn n = asViewFocus . at vn . _Just %= focusSetCurrent n
+
+eOpenFile :: Action ()
+eOpenFile = do
+  gc <- newGameChooser
+  asExplorer . eGameChooser .= Just gc
+  setViewFocus ExplorerView PGNBrowser
+
+abort :: Action ()
+abort = withFocus go where
+  go ExplorerView PGNBrowser = eAbortOpenFile
+  go _ _                     = pure ()
+
+
+eAbortOpenFile :: Action ()
+eAbortOpenFile = do
+  asExplorer . eGameChooser .= Nothing
+  setViewFocus ExplorerView PlyList
+
+defaultExplorerKeymap = Map.fromList
+  [ ( Vty.EvKey Vty.KDown []
+    , simpleBinding "Select next move" $ explorerNext *> continue
+    )
+  , ( Vty.EvKey Vty.KUp []
+    , simpleBinding "Select previous move" $ explorerPrev *> continue
+    )
+  , ( Vty.EvKey Vty.KRight []
+    , simpleBinding "First child" $ explorerFirstChild *> continue
+    )
+  , ( Vty.EvKey Vty.KLeft []
+    , simpleBinding "Parent" $ explorerParent *> continue
+    )
+  , ( Vty.EvKey (Vty.KChar 'c') [Vty.MCtrl]
+    , simpleBinding "Create game from this variation" $ createGame *> continue
+    )
+  , ( Vty.EvKey (Vty.KChar 'o') [Vty.MCtrl]
+    , simpleBinding "Open PGN file" $ eOpenFile *> continue
+    )
+  ]
+
+------------------------------------------------------------------------------
+
+pgnBrowserEnter :: Action ()
+pgnBrowserEnter = use (asExplorer . eGameChooser) >>= \case
+  Just (GameChooser (ChooseFile fb)) -> case Brick.fileBrowserCursor fb of
+    Just fileInfo -> readPGNFile (fileInfoFilePath fileInfo) >>= \case
+      Right pgn -> do
+        asExplorer . eGameChooser . _Just %= chooseGame pgn
+        setViewFocus ExplorerView GameList
+      Left err -> message err
+    Nothing -> pure ()
+  Just (GameChooser (ChooseGame l)) -> case snd <$> Brick.listSelectedElement l of
+    Just game -> do
+      let forest = pathTree . fmap (^. PGN.annPly) <$> game ^. PGN.cgForest
+      case nextTree (fromForest forest) of
+        Just treePos -> do
+          asExplorer . eTreePos .= treePos
+          eAbortOpenFile
+        Nothing -> message ("Empty game" :: String)
+    Nothing -> pure ()
+
+doesPGNExist :: Action Bool
+doesPGNExist = do
+  fb <- preuse $ asExplorer . eGameChooser . _Just . cgStep . _ChooseFile
+  maybe (pure False) (liftIO . doesFileExist . fileInfoFilePath) $
+    fileBrowserCursor =<< fb
+
+pgnBrowserIsSearching :: Action Bool
+pgnBrowserIsSearching =
+  preuse (asExplorer . eGameChooser . _Just . cgStep . _ChooseFile) <&>
+  maybe False fileBrowserIsSearching
+
+pgnBrowserHandler :: EventHandler
+pgnBrowserHandler = EventHandler (asConfig . pgnBrowserKeymapL) $ \e -> do
+  handleEvent (asExplorer . eGameChooser . _Just . cgStep . _ChooseFile) handleFileBrowserEvent e
+  continue
+
+
+defaultPgnBrowserKeymap :: Keymap
+defaultPgnBrowserKeymap = Map.fromList
+  [ ( Vty.EvKey Vty.KEnter []
+    , Binding "Select file" doesPGNExist $ pgnBrowserEnter *> continue
+    )
+  , ( Vty.EvKey Vty.KEsc []
+    , Binding "Abort" (not <$> pgnBrowserIsSearching) $
+      abort *> continue
+    )
+  ]
+
+defaultGameListKeymap :: Keymap
+defaultGameListKeymap = Map.fromList
+  [ ( Vty.EvKey Vty.KEnter []
+    , simpleBinding "Open Game" $ pgnBrowserEnter *> continue
+    )
+  ]
+
+gameListHandler :: EventHandler
+gameListHandler = EventHandler (asConfig . gameListKeymapL) $ \e -> do
+  handleEvent (asExplorer . eGameChooser . _Just . cgStep . _ChooseGame)
+    Brick.handleListEvent e
+  continue
+
+------------------------------------------------------------------------------
 
 toggleAnalyser :: Action ()
 toggleAnalyser = do
@@ -397,7 +642,7 @@ startSearch = do
       chan <- use asChannel
       tid <- liftIO . forkIO . forever $
         atomically (readTChan ic) >>= writeBChanNonBlocking chan
-      asAnalyser .= Just (a & aReader .~ Just (bmc, tid))
+      asAnalyser .= Just (a & aReader ?~ (bmc, tid))
     Nothing -> pure ()
 
 stopSearch :: Action Bool
@@ -417,18 +662,14 @@ stopSearch = do
       Nothing -> pure False
     Nothing -> pure False
 
+changeGame :: Action a -> Action a
+changeGame action = do
+  stopped <- stopSearch
+  a <- action
+  when stopped $ startSearch
+  pure a
+
 ------------------------------------------------------------------------------
-
-data ViewName = HelpView
-              | ChessboardView
-              | ExplorerView
-              | ConfigEditorView
-              deriving (Bounded, Enum, Eq, Generic, Ord, Read, Show)
-
-instance Binary ViewName
-
-type Action = StateT AppState (EventM Name)
-type Keymap = Map Vty.Event (Text, Action (Next AppState))
 
 haskellSyntax :: Syntax
 haskellSyntax = fromJust $ "haskell" `lookupSyntax` defaultSyntaxMap
@@ -459,19 +700,20 @@ configEditorText = asConfigEditor . to getEditContents . to Text.unlines
 defaultGlobalKeymap :: Keymap
 defaultGlobalKeymap = Map.fromList
   [ ( Vty.EvKey (Vty.KChar 'q') [Vty.MCtrl]
-    , ("Quit the application", quit)
+    , simpleBinding "Quit the application" quit
     )
   , ( Vty.EvKey (Vty.KFun 1) []
-    , ("Help view", switchView HelpView *> continue)
+    , simpleBinding "Help view" $ switchView HelpView *> continue
     )
   , ( Vty.EvKey (Vty.KFun 2) []
-    , ("Game view", switchView ChessboardView *> continue)
+    , simpleBinding "Game view" $ switchView ChessboardView *> continue
     )
   , ( Vty.EvKey (Vty.KFun 3) []
-    , ("Book explorer", switchView ExplorerView *> continue)
+    , simpleBinding "Book explorer" $ switchView ExplorerView *> continue
     )
   , ( Vty.EvKey (Vty.KFun 10) []
-    , ("Configuration editor", switchView ConfigEditorView *> continue)
+    , simpleBinding "Configuration editor" $
+      switchView ConfigEditorView *> continue
     )
   ]
 
@@ -492,21 +734,27 @@ instance Message String where
 
 data Info = UnboundEvent Vty.Event
           | WroteFile FilePath
-          deriving (Eq, Generic, Read, Show)
+          | SeveralPiecesCanMoveHere Square Position [Ply]
+          | NotAllowedToMove Color PieceType Square
+          deriving (Eq, Generic, Show)
 
 instance Message Info where
   message (UnboundEvent e) = message $ "Unbound event: " <> ppVtyEvent e
   message (WroteFile fp)   = message $ "Wrote " <> fp
+  message (SeveralPiecesCanMoveHere sq pos pls) = message $
+    "Several pieces can move to " <> show sq <> ": " <> intercalate "|" (fmap (toSAN pos) pls)
+  message (NotAllowedToMove c p sq) = message $
+    "You are not allowed to move the " <> show c <> " " <> show p <> " at " <> show sq
 
 writeConfigFile :: Action ()
 writeConfigFile = do
-  fp <- use configFileL
+  fp <- use $ asConfig . configFileL
   liftIO . ByteString.writeFile fp . Text.encodeUtf8 =<< use configEditorText
   message $ WroteFile fp
 
 reloadConfigFile :: Bool -> Action ()
 reloadConfigFile verbose = do
-  fp <- use configFileL
+  fp <- use $ asConfig . configFileL
   exists <- liftIO $ doesFileExist fp
   a <- Text.decodeUtf8 <$>
        if | exists    -> liftIO $ ByteString.readFile fp
@@ -541,39 +789,32 @@ quit = lift . Brick.halt =<< get
 defaultConfigEditorKeymap :: Keymap
 defaultConfigEditorKeymap = Map.fromList
   [ ( Vty.EvKey (Vty.KChar 'l') [Vty.MCtrl]
-    , ( "Save and relaunch"
-      , writeConfigFile *> relaunch
-      )
+    , simpleBinding "Save and relaunch" $
+      writeConfigFile *> relaunch
     )
   , ( Vty.EvKey (Vty.KChar 's') [Vty.MCtrl]
-    , ( "Write configuration to disk"
-      , writeConfigFile *> continue
-      )
+    , simpleBinding "Write configuration to disk" $
+      writeConfigFile *> continue
     )
   , ( Vty.EvKey (Vty.KChar 'r') [Vty.MCtrl]
-    , ( "Revert from disk or default"
-      , reloadConfigFile True *> continue
-      )
+    , simpleBinding "Revert from disk or default" $
+      reloadConfigFile True *> continue
     )
   , ( Vty.EvKey (Vty.KChar '<') [Vty.MMeta]
-    , ( "Go to beginning of configuration"
-      , gotoBeginningOfConfig *> continue
-      )
+    , simpleBinding "Go to beginning of configuration" $
+      gotoBeginningOfConfig *> continue
     )
   , ( Vty.EvKey (Vty.KChar '>') [Vty.MMeta]
-    , ( "Go to end of configuration"
-      , gotoEndOfConfig *> continue
-      )
+    , simpleBinding "Go to end of configuration" $
+      gotoEndOfConfig *> continue
     )
   , ( Vty.EvKey (Vty.KChar 'n') [Vty.MMeta]
-    , ( "Scroll error down"
-      , scrollRebuildErrorDown *> continue
-      )
+    , simpleBinding "Scroll error down" $
+      scrollRebuildErrorDown *> continue
     )
   , ( Vty.EvKey (Vty.KChar 'p') [Vty.MMeta]
-    , ( "Scroll error up"
-      , scrollRebuildErrorUp *> continue
-      )
+    , simpleBinding "Scroll error up" $
+      scrollRebuildErrorUp *> continue
     )
   ]
 
@@ -581,57 +822,58 @@ data EventHandler = EventHandler
   (Getter AppState Keymap)
   (Vty.Event -> Action (Next AppState))
 
-handleEvent :: Lens' AppState a
+handleEvent :: LensLike' (EventM Name) AppState a
             -> (Vty.Event -> a -> EventM Name a)
             -> Vty.Event
             -> Action ()
-handleEvent l h e = get >>= \s -> lift (handleEventLensed s l h e) >>= put
+handleEvent l h e = put =<< lift . traverseOf l (h e) =<< get
 
 configEditorHandler :: EventHandler
-configEditorHandler = EventHandler configEditorKeymapL $ \e -> do
+configEditorHandler = EventHandler (asConfig . configEditorKeymapL) $ \e -> do
   handleEvent asConfigEditor handleEditorEvent e
   continue
 
 defaultChessboardKeymap :: Keymap
 defaultChessboardKeymap = Map.fromList $
   ([ ( Vty.EvKey (Vty.KChar 'a') [Vty.MCtrl]
-     , ("Toggle analyser", toggleAnalyser *> continue)
+     , simpleBinding "Toggle analyser" $ toggleAnalyser *> continue
      )
-   , ( Vty.EvKey Vty.KLeft [],
-       ("Move one square to the left", cursorLeft *> continue ))
+   , ( Vty.EvKey Vty.KLeft []
+     , simpleBinding "Move one square to the left" $ cursorLeft *> continue
+     )
    , ( Vty.EvKey Vty.KRight []
-     , ("Move one square to the right", cursorRight *> continue)
+     , simpleBinding "Move one square to the right" $ cursorRight *> continue
      )
    , ( Vty.EvKey Vty.KUp []
-     , ("Move one square up", cursorUp *> continue)
+     , simpleBinding "Move one square up" $ cursorUp *> continue
      )
    , ( Vty.EvKey Vty.KDown []
-     , ("Move one square down", cursorDown *> continue)
+     , simpleBinding "Move one square down" $ cursorDown *> continue
      )
    , ( Vty.EvKey Vty.KEnter []
-     , ("Select current square", enter *> continue)
+     , simpleBinding "Select current square" $ enter *> continue
      )
    , ( Vty.EvKey Vty.KBS []
-     , ("Delete ply input backwards", plyInputBS *> continue)
+     , simpleBinding "Delete ply input backwards" $ plyInputBS *> continue
      )
    , ( Vty.EvKey Vty.KEsc []
-     , ("Clear ply input", clearInput *> continue)
+     , simpleBinding "Clear ply input" $ clearInput *> continue
      )
    , ( Vty.EvKey (Vty.KChar 'r') [Vty.MCtrl]
-     , ("Reset game", resetGame *> continue)
+     , simpleBinding "Reset game" $ resetGame *> continue
      )
    , ( Vty.EvKey Vty.KDel []
-     , ("Takeback", takeback *> continue)
+     , simpleBinding "Takeback" $ takeback *> continue
      )
    ] <>
   ) $
   "abcdefgh12345678knqrxo" <&> \c ->
   ( Vty.EvKey (Vty.KChar c) []
-  , ("Ply input", plyInput c *> continue)
+  , simpleBinding "Ply input" $ plyInput c *> continue
   )
 
 chessboardHandler :: EventHandler
-chessboardHandler = EventHandler chessboardKeymapL $ \e -> do
+chessboardHandler = EventHandler (asConfig . chessboardKeymapL) $ \e -> do
   message $ UnboundEvent e
   continue
 
@@ -675,13 +917,6 @@ selectedPlies g =
   pos = currentPosition g
   input = g ^. gInput
 
-changeGame :: Action a -> Action a
-changeGame action = do
-  stopped <- stopSearch
-  a <- action
-  when stopped $ startSearch
-  pure a
-
 takeback :: Action ()
 takeback = changeGame . modifying (asGame . gPlies) $ \case
   [] -> []
@@ -690,47 +925,27 @@ takeback = changeGame . modifying (asGame . gPlies) $ \case
 handleViewEvent :: ViewName -> Name
                 -> AppState -> Vty.Event -> EventM Name (Next AppState)
 handleViewEvent = go where
-  go HelpView         _ = dispatch helpHandler
-  go ChessboardView   _ = dispatch chessboardHandler
-  go ExplorerView     _ = dispatch explorerHandler
-  go ConfigEditorView _ = dispatch configEditorHandler
+  go HelpView         _       = dispatch helpHandler
+  go ChessboardView   _       = dispatch chessboardHandler
+  go ExplorerView     PlyList = dispatch explorerHandler
+  go ExplorerView PGNBrowser  = dispatch pgnBrowserHandler
+  go ExplorerView GameList = dispatch gameListHandler
+  go ConfigEditorView _       = dispatch configEditorHandler
   dispatch (EventHandler keymapL fallback) s e = evalStateT action s where
+    local = case Map.lookup e (s ^. keymapL) of
+      Just b -> do
+        g <- bindingGuard b
+        if g then bindingAction b else fallback e
+      Nothing -> fallback e
     action = do
       clearMessage
-      case Map.lookup e (s ^. globalKeymapL) <|> Map.lookup e (s ^. keymapL) of
-        Just (_, a) -> a
-        Nothing     -> fallback e
+      case Map.lookup e (s ^. asConfig . globalKeymapL) of
+        Just b -> do
+          g <- bindingGuard b
+          if g then bindingAction b else local
+        Nothing -> local
 
 ------------------------------------------------------------------------------
-
-data Game = Game
-  { _gInitial :: Position
-  , _gPlies   :: [Ply]
-  , _gInput   :: String
-  , _gFrom    :: Maybe Square
-  , _gCursor  :: Square
-  } deriving (Generic)
-
-instance Binary Game
-
-
-gInitial :: Lens' Game Position
-gInitial = lens _gInitial $ \s b -> s { _gInitial = b }
-
-gPlies :: Lens' Game [Ply]
-gPlies = lens _gPlies $ \s b -> s { _gPlies = b }
-
-gInput :: Lens' Game String
-gInput = lens _gInput $ \s b -> s { _gInput = b }
-
-gFrom :: Lens' Game (Maybe Square)
-gFrom = lens _gFrom $ \s b -> s { _gFrom = b }
-
-gCursor :: Lens' Game Square
-gCursor = lens _gCursor $ \s b -> s { _gCursor = b }
-
-newGame :: Game
-newGame = Game startpos [] "" Nothing E1
 
 currentPosition, previousPosition :: Game -> Position
 currentPosition g = foldl' unsafeDoPly (g ^. gInitial) (g ^. gPlies)
@@ -765,12 +980,21 @@ enter = do
   when ok $ do
     use (asGame . gFrom) >>= \case
       Nothing -> do
-        dst <- use (asGame . gCursor)
-        let p pl = plyTarget pl == dst
-        plies <- legalPlies <$> uses asGame currentPosition
-        case filter p plies of
+        sq <- use $ asGame . gCursor
+        let goesTo pl = plyTarget pl == sq
+        pos <- uses asGame currentPosition
+        let plies = legalPlies pos
+        case filter goesTo plies of
+          [] -> do
+            let comesFrom pl = plySource pl == sq
+            case filter comesFrom plies of
+              [] -> case pieceAt pos sq of
+                Nothing     -> message $ "No piece can go to " <> show sq
+                Just (c, p) -> message $ NotAllowedToMove c p sq
+              [pl] -> addPly pl
+              xs -> assign (asGame . gFrom) $ Just sq
           [pl] -> addPly pl
-          _    -> assign (asGame . gFrom) $ Just dst
+          xs -> message $ SeveralPiecesCanMoveHere sq pos xs
       Just src -> use (asGame . gCursor) >>= \dst -> do
         let p pl = plySource pl == src && plyTarget pl == dst
         plies <- legalPlies <$> uses asGame currentPosition
@@ -821,19 +1045,6 @@ renderGame s = [w $ s ^. asGame] where
 
 ------------------------------------------------------------------------------
 
-data AppState = AppState
-  { _asChannel      :: BChan AppEvent
-  , _asConfig       :: Config
-  , _asFocus        :: FocusRing ViewName
-  , _asViewFocus    :: Map ViewName (FocusRing Name)
-  , _asGame         :: Game
-  , _asAnalyser     :: Maybe Analyser
-  , _asExplorer     :: Explorer
-  , _asConfigEditor :: Editor Text Name
-  , _asMessage      :: Maybe Text
-  , _asRelaunch     :: Bool
-  }
-
 asChannel :: Getter AppState (BChan AppEvent)
 asChannel = to _asChannel
 
@@ -858,17 +1069,6 @@ asExplorer = lens _asExplorer $ \s b -> s { _asExplorer = b }
 asConfigEditor :: Lens' AppState (Editor Text Name)
 asConfigEditor = lens _asConfigEditor $ \s b -> s { _asConfigEditor = b }
 
-instance HasTheme AppState where themeL = asConfig . themeL
-instance HasConfigFile AppState where configFileL = asConfig . configFileL
-instance HasChessboardKeymap AppState where
-  chessboardKeymapL = asConfig . chessboardKeymapL
-instance HasConfigEditorKeymap AppState where
-  configEditorKeymapL = asConfig . configEditorKeymapL
-instance HasGlobalKeymap AppState where
-  globalKeymapL = asConfig . globalKeymapL
-instance HasStartupAction AppState where
-  startupAction = asConfig . startupAction
-
 asMessage :: Lens' AppState (Maybe Text)
 asMessage = lens _asMessage $ \s b -> s { _asMessage = b }
 
@@ -882,17 +1082,10 @@ initialState chan cfg =
   focus = focusSetCurrent (defaultView cfg) (focusRing [minBound .. maxBound])
   viewFocus = Map.fromList
     [ ( ChessboardView, focusRing [Chessboard] )
-    , ( ExplorerView, focusRing [PlyList] )
+    , ( ExplorerView, focusRing [PlyList, PGNBrowser, GameList] )
     , ( ConfigEditorView, focusRing [ConfigEditor] )
     ]
   edit = editor ConfigEditor Nothing (Text.decodeUtf8 $(embedFile "app/Main.hs"))
-
-data Name = Help
-          | Chessboard | PlyList
-          | ConfigEditor | RebuildError
-          deriving (Eq, Ord, Read, Show)
-
-type AppEvent = [UCI.Info]
 
 focusedView :: Getter AppState (Maybe ViewName)
 focusedView = asFocusL . to focusGetCurrent
@@ -903,6 +1096,12 @@ setView v = asFocusL %~ focusSetCurrent v
 viewName :: AppState -> ViewName
 viewName s = fromMaybe (s ^. asConfig . defaultViewL) $ s ^. focusedView
 
+withFocus :: (ViewName -> Name -> Action a) -> Action a
+withFocus f = do
+  vn <- fromJust . focusGetCurrent <$> use asFocusL
+  n <- fromJust . focusGetCurrent . fromJust <$> use (asViewFocus . at vn)
+  f vn n
+
 focusedWidget :: AppState -> Maybe (FocusRing Name)
 focusedWidget s = s ^. asViewFocus . at (viewName s)
 
@@ -911,7 +1110,7 @@ app = Brick.App { .. } where
   appStartEvent = execStateT $ do
     reloadConfigFile False
     restore
-    join (use startupAction)
+    join . use $ asConfig . startupAction
   appDraw s = renderView (viewName s) s
   appHandleEvent s = go where
     go (VtyEvent e) = handleViewEvent vn n s e where
@@ -919,10 +1118,10 @@ app = Brick.App { .. } where
       n = fromJust . focusGetCurrent $ s ^?! asViewFocus . ix vn
     go (AppEvent i) = case (find isScore i, find isPV i) of
       (Just score, Just (UCI.PV pv)) -> Brick.continue $
-        s & asAnalyser . traverse . aPV .~ Just pv
+        s & asAnalyser . traverse . aPV ?~ pv
       _ -> Brick.continue s
     go _            = Brick.continue s
-  appAttrMap = view themeL
+  appAttrMap = view $ asConfig . themeL
   appChooseCursor s
     | isJust $ s ^? asViewFocus . ix (viewName s)
     = focusRingCursor (^?! asViewFocus . ix (viewName s)) s
@@ -934,6 +1133,8 @@ isScore _           = False
 isPV UCI.PV{} = True
 isPV _        = False
 
+------------------------------------------------------------------------------
+
 data Persistent = Persistent ViewName Game
                   deriving (Generic)
 
@@ -944,14 +1145,14 @@ persistent =
   Persistent <$> use (asFocusL . to focusGetCurrent . to fromJust)
              <*> use asGame
 
-persist :: Action ()
+persist, restore :: Action ()
 persist = liftIO . Dyre.saveBinaryState =<< persistent
-
-restore :: Action ()
 restore = do
   (Persistent vn g) <- liftIO . Dyre.restoreBinaryState =<< persistent
   asFocusL %= focusSetCurrent vn
   asGame .= g
+
+------------------------------------------------------------------------------
 
 main :: Config -> IO ()
 main inCfg = do
