@@ -1,4 +1,3 @@
-{-# LANGUAGE GADTs #-}
 {-# LANGUAGE DeriveGeneric     #-}
 {-# LANGUAGE FlexibleContexts  #-}
 {-# LANGUAGE FlexibleInstances #-}
@@ -49,7 +48,6 @@ import           Brick.Types                  (BrickEvent (AppEvent, VtyEvent),
                                                Padding (..),
                                                ViewportType (Both, Horizontal, Vertical),
                                                Widget, handleEventLensed)
-import Data.Proxy
 import           Brick.Widgets.Border         (border, borderWithLabel)
 import           Brick.Widgets.Center         (hCenter, vCenter)
 import           Brick.Widgets.Chess
@@ -64,7 +62,7 @@ import           Brick.Widgets.Edit           (Editor, editContentsL, editor,
                                                getEditContents,
                                                handleEditorEvent, renderEditor)
 import           Brick.Widgets.FileBrowser
-import qualified Brick.Widgets.FileBrowser as Brick
+import qualified Brick.Widgets.FileBrowser    as Brick
 import qualified Brick.Widgets.List           as Brick
 import           Brick.Widgets.Skylighting    (attrMappingsForStyle, highlight)
 import qualified Config.Dyre                  as Dyre
@@ -74,13 +72,14 @@ import           Control.Applicative          ((<|>))
 import           Control.Concurrent           (ThreadId, forkIO, killThread)
 import           Control.Concurrent.STM       (atomically)
 import           Control.Concurrent.STM.TChan
-import           Control.Lens                 (reuse, _Wrapped, preuse, Prism', prism', Getter, Getting, Lens',
-                                               LensLike', _Just, assign, at,
-                                               from, ix, lens, modifying, to,
-                                               traverseOf, use, uses, view,
-                                               (%=), (%~), (&), (.=), (.~),
-                                               (<>=), (<>~), (?~), (^.), (^?!),
-                                               (^?))
+import           Control.Lens                 (Getter, Getting, Lens',
+                                               LensLike', Prism', _2, _Just,
+                                               _Wrapped, assign, at, from, ix,
+                                               lens, modifying, preuse, prism',
+                                               reuse, to, traverseOf, use, uses,
+                                               view, (%=), (%~), (&), (.=),
+                                               (.~), (<>=), (<>~), (<~), (?~),
+                                               (^.), (^?!), (^?))
 import           Control.Lens.TH              (makeLenses)
 import           Control.Monad                (forever, join, void, when)
 import           Control.Monad.IO.Class       (MonadIO (liftIO))
@@ -100,7 +99,11 @@ import           Data.List.NonEmpty           (NonEmpty)
 import qualified Data.List.NonEmpty           as NonEmpty
 import           Data.Map                     (Map)
 import qualified Data.Map                     as Map
-import           Data.Maybe                   (fromJust, fromMaybe, isJust)
+import           Data.Maybe                   (catMaybes, fromJust, fromMaybe,
+                                               isJust)
+import           Data.Proxy
+import           Data.Sequence                (Seq)
+import qualified Data.Sequence                as Seq
 import           Data.Text                    (Text)
 import qualified Data.Text                    as Text
 import qualified Data.Text.Encoding           as Text
@@ -113,7 +116,7 @@ import qualified Data.Vector                  as Vector
 import qualified Data.Vector.Unboxed          as Unboxed
 import           GHC.Generics                 (Generic)
 import           Game.Chess
-import Game.Chess.PGN (PGN, readPGNFile)
+import           Game.Chess.PGN               (PGN, readPGNFile)
 import qualified Game.Chess.PGN               as PGN
 import           Game.Chess.Polyglot
 import           Game.Chess.SAN
@@ -136,18 +139,19 @@ instance Binary ViewName
 
 data Name = Help
           | Chessboard
-          | PlyList | PGNBrowser | GameList
+          | PlyList | FileBrowser | GameList
           | ConfigEditor | RebuildError
           deriving (Eq, Ord, Read, Show)
 
 type AppEvent = [UCI.Info]
 
 data Game = Game
-  { _gInitial :: Position
-  , _gPlies   :: [Ply]
-  , _gInput   :: String
-  , _gFrom    :: Maybe Square
-  , _gCursor  :: Square
+  { _gInitial     :: Position
+  , _gPlies       :: [Ply]
+  , _gPerspective :: Maybe Color
+  , _gInput       :: String
+  , _gFrom        :: Maybe Square
+  , _gCursor      :: Square
   } deriving (Generic)
 
 instance Binary Game
@@ -157,6 +161,9 @@ gInitial = lens _gInitial $ \s b -> s { _gInitial = b }
 
 gPlies :: Lens' Game [Ply]
 gPlies = lens _gPlies $ \s b -> s { _gPlies = b }
+
+gPerspective :: Lens' Game (Maybe Color)
+gPerspective = lens _gPerspective $ \s b -> s { _gPerspective = b }
 
 gInput :: Lens' Game String
 gInput = lens _gInput $ \s b -> s { _gInput = b }
@@ -168,12 +175,20 @@ gCursor :: Lens' Game Square
 gCursor = lens _gCursor $ \s b -> s { _gCursor = b }
 
 newGame :: Game
-newGame = Game startpos [] "" Nothing E1
+newGame = Game startpos [] Nothing "" Nothing E1
+
+togglePerspective :: Action ()
+togglePerspective = withFocus go where
+  go ChessboardView _ = do
+    modifying (asGame . gPerspective) $ \case
+      Nothing    -> Just White
+      Just White -> Just Black
+      Just Black -> Nothing
 
 data Analyser = Analyser
   { _aEngine :: UCI.Engine
   , _aReader :: Maybe (TChan UCI.BestMove, ThreadId)
-  , _aPV     :: Maybe (Unboxed.Vector Ply)
+  , _aPVs    :: Vector.Vector PredictedVariation
   }
 
 aEngine :: Lens' Analyser UCI.Engine
@@ -182,16 +197,19 @@ aEngine = lens _aEngine $ \s b -> s { _aEngine = b }
 aReader :: Lens' Analyser (Maybe (TChan UCI.BestMove, ThreadId))
 aReader = lens _aReader $ \s b -> s { _aReader = b }
 
-aPV :: Lens' Analyser (Maybe (Unboxed.Vector Ply))
-aPV = lens _aPV $ \s b -> s { _aPV = b }
+aPVs :: Lens' Analyser (Vector.Vector PredictedVariation)
+aPVs = lens _aPVs $ \s b -> s { _aPVs = b}
+
+data PredictedVariation = PV !UCI.Score !(Maybe UCI.Bounds) !(Unboxed.Vector Ply)
 
 mkAnalyser :: MonadIO m => Config -> m (Maybe Analyser)
 mkAnalyser Config{..} =
-  fmap mk <$> liftIO (UCI.start' tout silence engineExecutable engineArgs)
- where
-  mk e = Analyser e Nothing Nothing
-  silence = const $ pure ()
-  tout = engineStartupTimeout
+  liftIO (UCI.start' engineStartupTimeout (const $ pure ()) engineExecutable engineArgs) >>= \case
+    Nothing -> pure Nothing
+    Just e -> do
+      UCI.setOptionSpinButton "MultiPV" 3 e
+      pure . Just $
+        Analyser e Nothing Vector.empty
 
 data Explorer = Explorer
   { _eInitial     :: Position
@@ -207,24 +225,27 @@ cgStep :: Lens' GameChooser GameChooserStep
 cgStep = lens (\(GameChooser a) -> a) $ \(GameChooser _) b -> GameChooser b
 
 data GameChooserStep = ChooseFile (Brick.FileBrowser Name)
-                     | ChooseGame (Brick.List Name PGN.Game)
+                     | ChooseGame (Brick.FileBrowser Name, Brick.GenericList Name Seq PGN.Game)
 
 _ChooseFile :: Prism' GameChooserStep (Brick.FileBrowser Name)
 _ChooseFile = prism' ChooseFile $ \case
   ChooseFile a -> Just a
-  _ -> Nothing
+  _            -> Nothing
 
-_ChooseGame :: Prism' GameChooserStep (Brick.List Name PGN.Game)
+_ChooseGame :: Prism' GameChooserStep (Brick.FileBrowser Name, Brick.GenericList Name Seq PGN.Game)
 _ChooseGame = prism' ChooseGame $ \case
   ChooseGame a -> Just a
-  _ -> Nothing
+  _            -> Nothing
 
 newGameChooser :: Action GameChooser
 newGameChooser = GameChooser . ChooseFile <$> newPGNBrowser
 
 chooseGame :: PGN -> GameChooser -> GameChooser
-chooseGame pgn _ = GameChooser . ChooseGame $
-  Brick.list GameList (Vector.fromList $ pgn ^. _Wrapped) 1
+chooseGame pgn (GameChooser (ChooseFile fb)) = GameChooser $ ChooseGame
+  (fb, Brick.list GameList (Seq.fromList $ pgn ^. _Wrapped) 1)
+
+chooseFile :: GameChooser -> GameChooser
+chooseFile (GameChooser (ChooseGame (fb, _))) = GameChooser $ ChooseFile fb
 
 ------------------------------------------------------------------------------
 
@@ -283,7 +304,7 @@ data Config = Config
   , chessboardKeymap     :: Keymap
   , explorerKeymap       :: Keymap
   , pgnBrowserKeymap     :: Keymap
-  , gameListKeymap :: Keymap
+  , gameListKeymap       :: Keymap
   , pgnDirectory         :: Maybe FilePath
   , configEditorKeymap   :: Keymap
   , globalKeymap         :: Keymap
@@ -437,7 +458,7 @@ helpHandler = EventHandler (asConfig . helpKeymapL) $ const continue
 
 newPGNBrowser :: Action (FileBrowser Name)
 newPGNBrowser = use (asConfig . pgnDirectoryL) >>= \dir ->
-  liftIO (newFileBrowser selectNonDirectories PGNBrowser dir) <&>
+  liftIO (newFileBrowser selectNonDirectories FileBrowser dir) <&>
   setFileBrowserEntryFilter (Just $ fileExtensionMatch "pgn")
 
 ----------------------------------------------------------------------------------
@@ -473,17 +494,27 @@ renderExplorer s = go $ view asExplorer s where
     fb = case e^.eGameChooser of
       Just (GameChooser (ChooseFile fb)) ->
         [renderFileBrowser True fb <=> renderMessage s]
-      Just (GameChooser (ChooseGame l)) ->
+      Just (GameChooser (ChooseGame (_, l))) ->
         [Brick.renderList drawSummary True l]
       Nothing -> []
-    drawSummary foc g = putCursorIf foc GameList (0, 0) $ case g ^. PGN.cgTags of
-      tags ->
-        let w = fromMaybe "''" $ lookup "White" tags
-            b = fromMaybe "''" $ lookup "Black" tags
-            e = fromMaybe "''" $ lookup "Event" tags
-        in txt e <+> txt " - " <+> txt w <+> txt " - " <+> txt b
+    drawSummary foc = putCursorIf foc GameList (0, 0) . txt . pgnGameSummary
 
-
+pgnGameSummary :: PGN.Game -> Text
+pgnGameSummary g =
+  let tags = g ^. PGN.cgTags
+      tag = (`lookup` tags)
+      prepend (tag -> x) (tag -> y) =
+        (x >>= (<$> y) . Text.append . flip Text.snoc ' ') <|> y
+      o = case g ^. PGN.cgOutcome of
+            PGN.Win White -> "1-0"
+            PGN.Win Black -> "0-1"
+            PGN.Draw      -> "½-½"
+            PGN.Undecided -> "*"
+  in Text.intercalate " - " $ catMaybes
+     [ tag "Event" <|> tag "Site" <|> tag "Date"
+     , prepend "WhiteTitle" "White"
+     , prepend "BlackTitle" "Black"
+     ] <> [o]
 
 withFocusRing' s v f a = withFocusRing (s ^?! asViewFocus . ix v)
   f a
@@ -515,15 +546,16 @@ setViewFocus vn n = asViewFocus . at vn . _Just %= focusSetCurrent n
 
 eOpenFile :: Action ()
 eOpenFile = do
-  gc <- newGameChooser
-  asExplorer . eGameChooser .= Just gc
-  setViewFocus ExplorerView PGNBrowser
+  asExplorer . eGameChooser <~ Just <$> newGameChooser
+  setViewFocus ExplorerView FileBrowser
 
 abort :: Action ()
 abort = withFocus go where
-  go ExplorerView PGNBrowser = eAbortOpenFile
+  go ExplorerView FileBrowser = eAbortOpenFile
+  go ExplorerView GameList = do
+    asExplorer . eGameChooser . _Just %= chooseFile
+    setViewFocus ExplorerView FileBrowser
   go _ _                     = pure ()
-
 
 eAbortOpenFile :: Action ()
 eAbortOpenFile = do
@@ -562,7 +594,7 @@ pgnBrowserEnter = use (asExplorer . eGameChooser) >>= \case
         setViewFocus ExplorerView GameList
       Left err -> message err
     Nothing -> pure ()
-  Just (GameChooser (ChooseGame l)) -> case snd <$> Brick.listSelectedElement l of
+  Just (GameChooser (ChooseGame (_, l))) -> case snd <$> Brick.listSelectedElement l of
     Just game -> do
       let forest = pathTree . fmap (^. PGN.annPly) <$> game ^. PGN.cgForest
       case nextTree (fromForest forest) of
@@ -605,11 +637,14 @@ defaultGameListKeymap = Map.fromList
   [ ( Vty.EvKey Vty.KEnter []
     , simpleBinding "Open Game" $ pgnBrowserEnter *> continue
     )
+  , ( Vty.EvKey Vty.KEsc []
+    , simpleBinding "Go back to file list" $ abort *> continue
+    )
   ]
 
 gameListHandler :: EventHandler
 gameListHandler = EventHandler (asConfig . gameListKeymapL) $ \e -> do
-  handleEvent (asExplorer . eGameChooser . _Just . cgStep . _ChooseGame)
+  handleEvent (asExplorer . eGameChooser . _Just . cgStep . _ChooseGame . _2)
     Brick.handleListEvent e
   continue
 
@@ -657,7 +692,7 @@ stopSearch = do
           void . atomically $ readTChan bmc
           UCI.isready e
         asAnalyser . traverse . aReader .= Nothing
-        asAnalyser . traverse . aPV     .= Nothing
+        asAnalyser . traverse . aPVs     .= Vector.empty
         pure True
       Nothing -> pure False
     Nothing -> pure False
@@ -838,6 +873,9 @@ defaultChessboardKeymap = Map.fromList $
   ([ ( Vty.EvKey (Vty.KChar 'a') [Vty.MCtrl]
      , simpleBinding "Toggle analyser" $ toggleAnalyser *> continue
      )
+   , ( Vty.EvKey (Vty.KChar 'p') [Vty.MCtrl]
+     , simpleBinding "Toggle analyser" $ togglePerspective *> continue
+     )
    , ( Vty.EvKey Vty.KLeft []
      , simpleBinding "Move one square to the left" $ cursorLeft *> continue
      )
@@ -928,8 +966,8 @@ handleViewEvent = go where
   go HelpView         _       = dispatch helpHandler
   go ChessboardView   _       = dispatch chessboardHandler
   go ExplorerView     PlyList = dispatch explorerHandler
-  go ExplorerView PGNBrowser  = dispatch pgnBrowserHandler
-  go ExplorerView GameList = dispatch gameListHandler
+  go ExplorerView FileBrowser = dispatch pgnBrowserHandler
+  go ExplorerView GameList    = dispatch gameListHandler
   go ConfigEditorView _       = dispatch configEditorHandler
   dispatch (EventHandler keymapL fallback) s e = evalStateT action s where
     local = case Map.lookup e (s ^. keymapL) of
@@ -1015,8 +1053,11 @@ addPly pl = do
 renderGame :: AppState -> [Widget Name]
 renderGame s = [w $ s ^. asGame] where
   status = renderMessage s
-  pv = case s ^? asAnalyser . traverse . aPV of
-    Just (Just pv) -> str $ varToSAN (s ^. asGame . to currentPosition) pv
+  pv = case s ^? asAnalyser . traverse . aPVs of
+    Just pvs
+      | length pvs > 0
+       -> let pos = s ^. asGame . to currentPosition
+          in vBox $ (\(PV s b pv) -> str (show s) <+> str " " <+> str (varToSAN pos pv)) <$> toList pvs
     _              -> str ""
   w g = (hLimit 23 (hCenter board) <+> var)
     <=> (hLimit 21 . vLimit 1 $ sideToMove <+> fill ' ' <+> lastPly)
@@ -1025,7 +1066,7 @@ renderGame s = [w $ s ^. asGame] where
     <=> fill ' '
     <=> status
    where
-    board = renderPosition Chessboard pos Nothing cursor english (null $ g ^. gInput)
+    board = renderPosition Chessboard pos (g ^. gPerspective) cursor english (null $ g ^. gInput)
     cursor | null (g ^. gInput) = Just $ g ^. gCursor
            | otherwise          = Nothing
     var = strWrap . varToSAN (g ^. gInitial) $ g ^. gPlies
@@ -1082,7 +1123,7 @@ initialState chan cfg =
   focus = focusSetCurrent (defaultView cfg) (focusRing [minBound .. maxBound])
   viewFocus = Map.fromList
     [ ( ChessboardView, focusRing [Chessboard] )
-    , ( ExplorerView, focusRing [PlyList, PGNBrowser, GameList] )
+    , ( ExplorerView, focusRing [PlyList, FileBrowser, GameList] )
     , ( ConfigEditorView, focusRing [ConfigEditor] )
     ]
   edit = editor ConfigEditor Nothing (Text.decodeUtf8 $(embedFile "app/Main.hs"))
@@ -1105,6 +1146,12 @@ withFocus f = do
 focusedWidget :: AppState -> Maybe (FocusRing Name)
 focusedWidget s = s ^. asViewFocus . at (viewName s)
 
+addPV i score bounds pv pvs
+  | i == Vector.length pvs
+  = pvs <> Vector.singleton (PV score bounds pv)
+  | otherwise
+  = pvs Vector.// [(i, PV score bounds pv)]
+
 app :: Brick.App AppState AppEvent Name
 app = Brick.App { .. } where
   appStartEvent = execStateT $ do
@@ -1116,9 +1163,10 @@ app = Brick.App { .. } where
     go (VtyEvent e) = handleViewEvent vn n s e where
       vn = viewName s
       n = fromJust . focusGetCurrent $ s ^?! asViewFocus . ix vn
-    go (AppEvent i) = case (find isScore i, find isPV i) of
-      (Just score, Just (UCI.PV pv)) -> Brick.continue $
-        s & asAnalyser . traverse . aPV ?~ pv
+    go (AppEvent i) = case (find isMultiPV i, find isScore i, find isPV i) of
+      (Just (UCI.MultiPV i'), Just (UCI.Score score bounds), Just (UCI.PV pv)) ->
+        Brick.continue $
+        s & asAnalyser . traverse . aPVs %~ addPV (pred i') score bounds pv
       _ -> Brick.continue s
     go _            = Brick.continue s
   appAttrMap = view $ asConfig . themeL
@@ -1132,6 +1180,8 @@ isScore UCI.Score{} = True
 isScore _           = False
 isPV UCI.PV{} = True
 isPV _        = False
+isMultiPV UCI.MultiPV{} = True
+isMultiPV _             = False
 
 ------------------------------------------------------------------------------
 
