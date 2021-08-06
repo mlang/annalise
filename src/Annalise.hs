@@ -46,10 +46,8 @@ import qualified Brick.Main                   as Brick
 import           Brick.Types                  (BrickEvent (AppEvent, VtyEvent),
                                                EventM, Location (..), Next,
                                                Padding (..),
-                                               ViewportType (
-                                                  Both, Horizontal, Vertical
-                                                  ),
-                                               Widget, handleEventLensed)
+                                               ViewportType (Both, Horizontal, Vertical),
+                                               Widget)
 import           Brick.Widgets.Border         (border, borderWithLabel)
 import           Brick.Widgets.Center         (hCenter, vCenter)
 import           Brick.Widgets.Chess
@@ -103,7 +101,6 @@ import           Data.Map                     (Map)
 import qualified Data.Map                     as Map
 import           Data.Maybe                   (catMaybes, fromJust, fromMaybe,
                                                isJust)
-import           Data.Proxy
 import           Data.Sequence                (Seq)
 import qualified Data.Sequence                as Seq
 import           Data.Text                    (Text)
@@ -111,6 +108,7 @@ import qualified Data.Text                    as Text
 import qualified Data.Text.Encoding           as Text
 import qualified Data.Text.Zipper             as Zipper
 import           Data.Tree                    (Tree (..), foldTree)
+import           Data.Tree.NonEmpty           (forestFromList, pathTree)
 import           Data.Tree.Zipper             (Full, TreePos, forest,
                                                fromForest, label, nextTree)
 import qualified Data.Tree.Zipper             as TreePos
@@ -187,6 +185,10 @@ togglePerspective = withFocus go where
       Just White -> Just Black
       Just Black -> Nothing
 
+pgnGame :: Game -> PGN.Game
+pgnGame g = PGN.gameFromForest [] ts PGN.Undecided where
+  ts = forestFromList $ g ^. gPlies
+
 data Analyser = Analyser
   { _aEngine :: UCI.Engine
   , _aReader :: Maybe (TChan UCI.BestMove, ThreadId)
@@ -259,9 +261,6 @@ eTreePos = lens _eTreePos $ \s b -> s { _eTreePos = b }
 
 eGameChooser :: Lens' Explorer (Maybe GameChooser)
 eGameChooser = lens _eGameChooser $ \s b -> s { _eGameChooser = b }
-
-pathTree :: Tree a -> Tree (NonEmpty a)
-pathTree = foldTree $ \a -> Node (pure a) . (fmap . fmap) (NonEmpty.cons a)
 
 defaultExplorer :: Explorer
 defaultExplorer = Explorer { .. } where
@@ -1064,7 +1063,7 @@ renderGame s = [w $ s ^. asGame] where
     UCI.CentiPawns s -> str . show $ realToFrac s / 100
     UCI.MateIn hm | hm >= 0 -> str $ "#" <> show hm
                   | otherwise -> str $ "#" <> show hm
-    
+
   w g = (hLimit 23 (hCenter board) <+> var)
     <=> (hLimit 21 . vLimit 1 $ sideToMove <+> fill ' ' <+> lastPly)
     <=> input

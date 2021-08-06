@@ -15,7 +15,8 @@ copyright: 2021 Mario Lang
 library
     exposed-modules:  Annalise
     other-modules:    Paths_annalise,
-                      Brick.Widgets.Chess
+                      Brick.Widgets.Chess,
+                      Data.Tree.NonEmpty
 
     build-depends:    base >=4.14,
                       binary,
