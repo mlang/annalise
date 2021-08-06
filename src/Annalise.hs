@@ -544,7 +544,7 @@ createGame = do
   switchView ChessboardView
 
 setViewFocus :: ViewName -> Name -> Action ()
-setViewFocus vn n = asViewFocus . at vn . _Just %= focusSetCurrent n
+setViewFocus vn n = asViewFocus . ix vn %= focusSetCurrent n
 
 eOpenFile :: Action ()
 eOpenFile = do
