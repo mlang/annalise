@@ -46,7 +46,9 @@ import qualified Brick.Main                   as Brick
 import           Brick.Types                  (BrickEvent (AppEvent, VtyEvent),
                                                EventM, Location (..), Next,
                                                Padding (..),
-                                               ViewportType (Both, Horizontal, Vertical),
+                                               ViewportType (
+                                                  Both, Horizontal, Vertical
+                                                  ),
                                                Widget, handleEventLensed)
 import           Brick.Widgets.Border         (border, borderWithLabel)
 import           Brick.Widgets.Center         (hCenter, vCenter)
@@ -1054,11 +1056,15 @@ renderGame :: AppState -> [Widget Name]
 renderGame s = [w $ s ^. asGame] where
   status = renderMessage s
   pv = case s ^? asAnalyser . traverse . aPVs of
-    Just pvs
-      | length pvs > 0
-       -> let pos = s ^. asGame . to currentPosition
-          in vBox $ (\(PV s b pv) -> str (show s) <+> str " " <+> str (varToSAN pos pv)) <$> toList pvs
-    _              -> str ""
+    Just pvs -> let pos = s ^. asGame . to currentPosition
+                in vBox $ drawPV pos <$> toList pvs
+    _              -> emptyWidget
+  drawPV pos (PV s b pv) = hLimit 10 (padLeft Max (drawScore s)) <+> str " " <+> str (varToSAN pos pv)
+  drawScore = \case
+    UCI.CentiPawns s -> str . show $ realToFrac s / 100
+    UCI.MateIn hm | hm >= 0 -> str $ "#" <> show hm
+                  | otherwise -> str $ "#" <> show hm
+    
   w g = (hLimit 23 (hCenter board) <+> var)
     <=> (hLimit 21 . vLimit 1 $ sideToMove <+> fill ' ' <+> lastPly)
     <=> input
