@@ -108,7 +108,7 @@ import qualified Data.Text                    as Text
 import qualified Data.Text.Encoding           as Text
 import qualified Data.Text.Zipper             as Zipper
 import           Data.Tree                    (Tree (..), foldTree)
-import           Data.Tree.NonEmpty           (forestFromList, pathTree)
+import           Data.Tree.NonEmpty           (listToForest, breadcrumbs)
 import           Data.Tree.Zipper             (Full, TreePos, forest,
                                                fromForest, label, nextTree)
 import qualified Data.Tree.Zipper             as TreePos
@@ -187,7 +187,7 @@ togglePerspective = withFocus go where
 
 pgnGame :: Game -> PGN.Game
 pgnGame g = PGN.gameFromForest [] ts PGN.Undecided where
-  ts = forestFromList $ g ^. gPlies
+  ts = listToForest $ g ^. gPlies
 
 data Analyser = Analyser
   { _aEngine :: UCI.Engine
@@ -266,7 +266,7 @@ defaultExplorer :: Explorer
 defaultExplorer = Explorer { .. } where
   _eInitial = startpos
   _eTreePos = fromJust . nextTree . fromForest $
-              pathTree <$> bookForest defaultBook _eInitial
+              breadcrumbs <$> bookForest defaultBook _eInitial
   _eGameChooser = Nothing
 
 data AppState = AppState
@@ -597,7 +597,7 @@ pgnBrowserEnter = use (asExplorer . eGameChooser) >>= \case
     Nothing -> pure ()
   Just (GameChooser (ChooseGame (_, l))) -> case snd <$> Brick.listSelectedElement l of
     Just game -> do
-      let forest = pathTree . fmap (^. PGN.annPly) <$> game ^. PGN.cgForest
+      let forest = breadcrumbs . fmap (^. PGN.annPly) <$> game ^. PGN.cgForest
       case nextTree (fromForest forest) of
         Just treePos -> do
           asExplorer . eTreePos .= treePos

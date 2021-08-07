@@ -1,17 +1,20 @@
-module Data.Tree.NonEmpty (forestFromList, treeFromNonEmpty, pathTree) where
+{-# LANGUAGE Safe #-}
+module Data.Tree.NonEmpty (
+  listToForest
+, nonEmptyToTree
+, breadcrumbs
+) where
 
-import           Data.Bifunctor     (second)
 import           Data.List.NonEmpty (NonEmpty, nonEmpty)
 import qualified Data.List.NonEmpty as NonEmpty
 import           Data.Maybe         (maybeToList)
 import           Data.Tree          (Tree (Node), foldTree, unfoldTree)
 
-forestFromList :: [a] -> [Tree a]
-forestFromList = maybeToList . fmap treeFromNonEmpty . nonEmpty
+listToForest :: [a] -> [Tree a]
+listToForest = maybeToList . fmap nonEmptyToTree . nonEmpty
 
-treeFromNonEmpty :: NonEmpty a -> Tree a
-treeFromNonEmpty = unfoldTree $ second maybeToList . NonEmpty.uncons
+nonEmptyToTree :: NonEmpty a -> Tree a
+nonEmptyToTree = unfoldTree $ fmap maybeToList . NonEmpty.uncons
 
-pathTree :: Tree a -> Tree (NonEmpty a)
-pathTree = foldTree $ \a -> Node (pure a) . (fmap . fmap) (NonEmpty.cons a)
-
+breadcrumbs :: Tree a -> Tree (NonEmpty a)
+breadcrumbs = foldTree $ \a -> Node (pure a) . (fmap . fmap) (NonEmpty.cons a)
