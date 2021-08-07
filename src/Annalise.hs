@@ -14,6 +14,8 @@ module Annalise (
   Config( engineExecutable
         , engineArgs
         , engineStartupTimeout
+        , engineMultiPV
+        , engineThreads
         , channelSize
         , theme
         , pgnDirectory
@@ -37,6 +39,7 @@ module Annalise (
 ) where
 
 import qualified Brick.AttrMap                as Brick
+import TH
 import           Brick.BChan                  (BChan, newBChan,
                                                writeBChanNonBlocking)
 import           Brick.Focus                  (FocusRing, focusGetCurrent,
@@ -80,7 +83,7 @@ import           Control.Lens                 (Getter, Getting, Lens',
                                                view, (%=), (%~), (&), (.=),
                                                (.~), (<>=), (<>~), (<~), (?~),
                                                (^.), (^?!), (^?))
-import           Control.Lens.TH              (makeLenses)
+import           Control.Lens.TH              (mappingNamer, makeLensesWith, lensField, lensRules, makeLenses, makePrisms)
 import           Control.Monad                (forever, join, void, when)
 import           Control.Monad.IO.Class       (MonadIO (liftIO))
 import           Control.Monad.State          (StateT, evalStateT, execStateT,
@@ -108,10 +111,11 @@ import qualified Data.Text                    as Text
 import qualified Data.Text.Encoding           as Text
 import qualified Data.Text.Zipper             as Zipper
 import           Data.Tree                    (Tree (..), foldTree)
-import           Data.Tree.NonEmpty           (listToForest, breadcrumbs)
+import           Data.Tree.NonEmpty           (breadcrumbs, listToForest)
 import           Data.Tree.Zipper             (Full, TreePos, forest,
                                                fromForest, label, nextTree)
 import qualified Data.Tree.Zipper             as TreePos
+import Data.Vector (Vector)
 import qualified Data.Vector                  as Vector
 import qualified Data.Vector.Unboxed          as Unboxed
 import           GHC.Generics                 (Generic)
@@ -156,93 +160,43 @@ data Game = Game
 
 instance Binary Game
 
-gInitial :: Lens' Game Position
-gInitial = lens _gInitial $ \s b -> s { _gInitial = b }
-
-gPlies :: Lens' Game [Ply]
-gPlies = lens _gPlies $ \s b -> s { _gPlies = b }
-
-gPerspective :: Lens' Game (Maybe Color)
-gPerspective = lens _gPerspective $ \s b -> s { _gPerspective = b }
-
-gInput :: Lens' Game String
-gInput = lens _gInput $ \s b -> s { _gInput = b }
-
-gFrom :: Lens' Game (Maybe Square)
-gFrom = lens _gFrom $ \s b -> s { _gFrom = b }
-
-gCursor :: Lens' Game Square
-gCursor = lens _gCursor $ \s b -> s { _gCursor = b }
+makeLenses ''Game
 
 newGame :: Game
 newGame = Game startpos [] Nothing "" Nothing E1
-
-togglePerspective :: Action ()
-togglePerspective = withFocus go where
-  go ChessboardView _ = do
-    modifying (asGame . gPerspective) $ \case
-      Nothing    -> Just White
-      Just White -> Just Black
-      Just Black -> Nothing
 
 pgnGame :: Game -> PGN.Game
 pgnGame g = PGN.gameFromForest [] ts PGN.Undecided where
   ts = listToForest $ g ^. gPlies
 
+data PredictedVariation = PV
+  { _pvScore  :: !UCI.Score
+  , _pvBounds :: !(Maybe UCI.Bounds)
+  , _pvPlies  :: !(Unboxed.Vector Ply)
+  }
+
+makeLenses ''PredictedVariation
+
 data Analyser = Analyser
   { _aEngine :: UCI.Engine
   , _aReader :: Maybe (TChan UCI.BestMove, ThreadId)
-  , _aPVs    :: Vector.Vector PredictedVariation
+  , _aPVs    :: Vector PredictedVariation
   }
 
-aEngine :: Lens' Analyser UCI.Engine
-aEngine = lens _aEngine $ \s b -> s { _aEngine = b }
-
-aReader :: Lens' Analyser (Maybe (TChan UCI.BestMove, ThreadId))
-aReader = lens _aReader $ \s b -> s { _aReader = b }
-
-aPVs :: Lens' Analyser (Vector.Vector PredictedVariation)
-aPVs = lens _aPVs $ \s b -> s { _aPVs = b}
-
-data PredictedVariation = PV !UCI.Score !(Maybe UCI.Bounds) !(Unboxed.Vector Ply)
-
-mkAnalyser :: MonadIO m => Config -> m (Maybe Analyser)
-mkAnalyser Config{..} =
-  liftIO (UCI.start' engineStartupTimeout (const $ pure ()) engineExecutable engineArgs) >>= \case
-    Nothing -> pure Nothing
-    Just e -> do
-      UCI.setOptionSpinButton "MultiPV" 3 e
-      pure . Just $
-        Analyser e Nothing Vector.empty
-
-data Explorer = Explorer
-  { _eInitial     :: Position
-  , _eTreePos     :: TreePos Full (NonEmpty Ply)
-  , _eGameChooser :: Maybe GameChooser
-  }
+makeLenses ''Analyser
 
 ------------------------------------------------------------------------------
-
-data GameChooser = GameChooser GameChooserStep
-
-cgStep :: Lens' GameChooser GameChooserStep
-cgStep = lens (\(GameChooser a) -> a) $ \(GameChooser _) b -> GameChooser b
 
 data GameChooserStep = ChooseFile (Brick.FileBrowser Name)
                      | ChooseGame (Brick.FileBrowser Name, Brick.GenericList Name Seq PGN.Game)
 
-_ChooseFile :: Prism' GameChooserStep (Brick.FileBrowser Name)
-_ChooseFile = prism' ChooseFile $ \case
-  ChooseFile a -> Just a
-  _            -> Nothing
+makePrisms ''GameChooserStep
 
-_ChooseGame :: Prism' GameChooserStep (Brick.FileBrowser Name, Brick.GenericList Name Seq PGN.Game)
-_ChooseGame = prism' ChooseGame $ \case
-  ChooseGame a -> Just a
-  _            -> Nothing
+data GameChooser = GameChooser
+  { _gcStep :: GameChooserStep
+  }
 
-newGameChooser :: Action GameChooser
-newGameChooser = GameChooser . ChooseFile <$> newPGNBrowser
+makeLenses ''GameChooser
 
 chooseGame :: PGN -> GameChooser -> GameChooser
 chooseGame pgn (GameChooser (ChooseFile fb)) = GameChooser $ ChooseGame
@@ -251,16 +205,16 @@ chooseGame pgn (GameChooser (ChooseFile fb)) = GameChooser $ ChooseGame
 chooseFile :: GameChooser -> GameChooser
 chooseFile (GameChooser (ChooseGame (fb, _))) = GameChooser $ ChooseFile fb
 
-------------------------------------------------------------------------------
+data Explorer = Explorer
+  { _eInitial     :: Position
+  , _eTreePos     :: TreePos Full (NonEmpty Ply)
+  , _eGameChooser :: Maybe GameChooser
+  }
 
-eInitial :: Lens' Explorer Position
-eInitial = lens _eInitial $ \s b -> s { _eInitial = b }
+makeLenses ''Explorer
 
-eTreePos :: Lens' Explorer (TreePos Full (NonEmpty Ply))
-eTreePos = lens _eTreePos $ \s b -> s { _eTreePos = b }
-
-eGameChooser :: Lens' Explorer (Maybe GameChooser)
-eGameChooser = lens _eGameChooser $ \s b -> s { _eGameChooser = b }
+ePlies :: Getter Explorer (NonEmpty Ply)
+ePlies = eTreePos . to label
 
 defaultExplorer :: Explorer
 defaultExplorer = Explorer { .. } where
@@ -268,19 +222,6 @@ defaultExplorer = Explorer { .. } where
   _eTreePos = fromJust . nextTree . fromForest $
               breadcrumbs <$> bookForest defaultBook _eInitial
   _eGameChooser = Nothing
-
-data AppState = AppState
-  { _asChannel      :: BChan AppEvent
-  , _asConfig       :: Config
-  , _asFocus        :: FocusRing ViewName
-  , _asViewFocus    :: Map ViewName (FocusRing Name)
-  , _asGame         :: Game
-  , _asAnalyser     :: Maybe Analyser
-  , _asExplorer     :: Explorer
-  , _asConfigEditor :: Editor Text Name
-  , _asMessage      :: Maybe Text
-  , _asRelaunch     :: Bool
-  }
 
 type Action = StateT AppState (EventM Name)
 
@@ -299,6 +240,8 @@ data Config = Config
   { engineExecutable     :: FilePath
   , engineArgs           :: [String]
   , engineStartupTimeout :: Time Second
+  , engineMultiPV        :: Maybe Int
+  , engineThreads        :: Maybe Int
   , channelSize          :: Int
   , theme                :: Brick.AttrMap
   , helpKeymap           :: Keymap
@@ -315,42 +258,21 @@ data Config = Config
   , dyreError            :: Maybe String
   }
 
-themeL :: Lens' Config Brick.AttrMap
-themeL = lens theme $ \s b -> s { theme = b }
+data AppState = AppState
+  { _asChannel      :: BChan AppEvent
+  , _asConfig       :: Config
+  , _asFocus        :: FocusRing ViewName
+  , _asViewFocus    :: Map ViewName (FocusRing Name)
+  , _asGame         :: Game
+  , _asAnalyser     :: Maybe Analyser
+  , _asExplorer     :: Explorer
+  , _asConfigEditor :: Editor Text Name
+  , _asMessage      :: Maybe Text
+  , _asRelaunch     :: Bool
+  }
 
-configFileL :: Getter Config FilePath
-configFileL = to configFile
-
-helpKeymapL :: Lens' Config Keymap
-helpKeymapL = lens helpKeymap $ \s b -> s { helpKeymap = b }
-
-chessboardKeymapL :: Lens' Config Keymap
-chessboardKeymapL = lens chessboardKeymap $ \s b -> s { chessboardKeymap = b }
-
-explorerKeymapL :: Lens' Config Keymap
-explorerKeymapL = lens explorerKeymap $ \s b -> s { explorerKeymap = b }
-
-pgnBrowserKeymapL :: Getter Config Keymap
-pgnBrowserKeymapL = to pgnBrowserKeymap
-
-gameListKeymapL :: Lens' Config Keymap
-gameListKeymapL = lens gameListKeymap $ \s b -> s { gameListKeymap = b }
-
-pgnDirectoryL :: Lens' Config (Maybe FilePath)
-pgnDirectoryL = lens pgnDirectory $ \s b -> s { pgnDirectory = b }
-
-configEditorKeymapL :: Lens' Config Keymap
-configEditorKeymapL = lens configEditorKeymap $ \s b ->
-  s { configEditorKeymap = b }
-
-globalKeymapL :: Lens' Config Keymap
-globalKeymapL = lens globalKeymap $ \s b -> s { globalKeymap = b }
-
-startupAction :: Getter Config (Action ())
-startupAction = to onStartup
-
-defaultViewL :: Lens' Config ViewName
-defaultViewL = lens defaultView $ \s b -> s { defaultView = b }
+makeLensesWith suffixRules ''Config
+makeLenses ''AppState
 
 defaultTheme :: Style -> Brick.AttrMap
 defaultTheme sty = Brick.attrMap Vty.defAttr $
@@ -361,6 +283,8 @@ defaultConfig = Config { .. } where
   engineExecutable = "stockfish"
   engineArgs = []
   engineStartupTimeout = sec 5
+  engineMultiPV = Nothing
+  engineThreads = Nothing
   channelSize = 20
   theme = defaultTheme breezeDark
   helpKeymap = defaultHelpKeymap
@@ -384,6 +308,8 @@ commandLine cfg = Config <$>
           <> help "Path to the UCI engine executable") <*>
   pure (engineArgs cfg) <*>
   pure (engineStartupTimeout cfg) <*>
+  optional (option auto $ long "engine-multi-pv" <> metavar "N" <> case engineMultiPV cfg of {Just i -> value i <> showDefault; Nothing -> mempty}) <*>
+  optional (option auto $ long "engine-threads" <> metavar "N" <> case engineThreads cfg of {Just i -> value i <> showDefault; Nothing -> mempty}) <*>
   option auto (long "channel-size"
             <> metavar "INT"
             <> help "Event channel size"
@@ -402,7 +328,41 @@ commandLine cfg = Config <$>
   pure (configFile cfg) <*>
   pure (dyreError cfg)
 
+withFocus :: (ViewName -> Name -> Action a) -> Action a
+withFocus f = do
+  vn <- fromJust . focusGetCurrent <$> use asFocus
+  n <- fromJust . focusGetCurrent . fromJust <$> use (asViewFocus . at vn)
+  f vn n
+
+newPGNBrowser :: Action (FileBrowser Name)
+newPGNBrowser = use (asConfig . pgnDirectoryL) >>= \dir ->
+  liftIO (newFileBrowser selectNonDirectories FileBrowser dir) <&>
+  setFileBrowserEntryFilter (Just $ fileExtensionMatch "pgn")
+
+togglePerspective :: Action ()
+togglePerspective = withFocus go where
+  go ChessboardView _ = do
+    modifying (asGame . gPerspective) $ \case
+      Nothing    -> Just White
+      Just White -> Just Black
+      Just Black -> Nothing
+
+newGameChooser :: Action GameChooser
+newGameChooser = GameChooser . ChooseFile <$> newPGNBrowser
+
 ------------------------------------------------------------------------------
+
+mkAnalyser :: MonadIO m => Config -> m (Maybe Analyser)
+mkAnalyser Config{..} =
+  liftIO (UCI.start' engineStartupTimeout (const $ pure ()) engineExecutable engineArgs) >>= \case
+    Nothing -> pure Nothing
+    Just e -> do
+      let maybeSet o = maybe (pure ()) $ \v ->
+            void $ UCI.setOptionSpinButton o v e
+      maybeSet "MultiPV" engineMultiPV
+      maybeSet "Threads" engineThreads
+      pure . Just $
+        Analyser e Nothing Vector.empty
 
 renderHelp s = [ui] where
   ui = header <=> vp where
@@ -456,16 +416,6 @@ helpHandler :: EventHandler
 helpHandler = EventHandler (asConfig . helpKeymapL) $ const continue
 
 ------------------------------------------------------------------------------
-
-newPGNBrowser :: Action (FileBrowser Name)
-newPGNBrowser = use (asConfig . pgnDirectoryL) >>= \dir ->
-  liftIO (newFileBrowser selectNonDirectories FileBrowser dir) <&>
-  setFileBrowserEntryFilter (Just $ fileExtensionMatch "pgn")
-
-----------------------------------------------------------------------------------
-
-ePlies :: Getter Explorer (NonEmpty Ply)
-ePlies = eTreePos . to label
 
 eCurrentPosition, ePreviousPosition :: Explorer -> Position
 eCurrentPosition e = foldl' unsafeDoPly (e^.eInitial) (e^.ePlies)
@@ -524,6 +474,7 @@ explorerHandler :: EventHandler
 explorerHandler = EventHandler (asConfig . explorerKeymapL) $ \e -> do
   message $ UnboundEvent e
   continue
+
 
 explorerPrev, explorerNext, explorerFirstChild, explorerParent :: Action ()
 explorerPrev = asExplorer . eTreePos %= (fromMaybe <*> TreePos.prev)
@@ -607,18 +558,18 @@ pgnBrowserEnter = use (asExplorer . eGameChooser) >>= \case
 
 doesPGNExist :: Action Bool
 doesPGNExist = do
-  fb <- preuse $ asExplorer . eGameChooser . _Just . cgStep . _ChooseFile
+  fb <- preuse $ asExplorer . eGameChooser . _Just . gcStep . _ChooseFile
   maybe (pure False) (liftIO . doesFileExist . fileInfoFilePath) $
     fileBrowserCursor =<< fb
 
 pgnBrowserIsSearching :: Action Bool
 pgnBrowserIsSearching =
-  preuse (asExplorer . eGameChooser . _Just . cgStep . _ChooseFile) <&>
+  preuse (asExplorer . eGameChooser . _Just . gcStep . _ChooseFile) <&>
   maybe False fileBrowserIsSearching
 
 pgnBrowserHandler :: EventHandler
 pgnBrowserHandler = EventHandler (asConfig . pgnBrowserKeymapL) $ \e -> do
-  handleEvent (asExplorer . eGameChooser . _Just . cgStep . _ChooseFile) handleFileBrowserEvent e
+  handleEvent (asExplorer . eGameChooser . _Just . gcStep . _ChooseFile) handleFileBrowserEvent e
   continue
 
 
@@ -645,7 +596,7 @@ defaultGameListKeymap = Map.fromList
 
 gameListHandler :: EventHandler
 gameListHandler = EventHandler (asConfig . gameListKeymapL) $ \e -> do
-  handleEvent (asExplorer . eGameChooser . _Just . cgStep . _ChooseGame . _2)
+  handleEvent (asExplorer . eGameChooser . _Just . gcStep . _ChooseGame . _2)
     Brick.handleListEvent e
   continue
 
@@ -1091,36 +1042,6 @@ renderGame s = [w $ s ^. asGame] where
 
 ------------------------------------------------------------------------------
 
-asChannel :: Getter AppState (BChan AppEvent)
-asChannel = to _asChannel
-
-asFocusL :: Lens' AppState (FocusRing ViewName)
-asFocusL = lens _asFocus $ \s b -> s { _asFocus = b }
-
-asConfig :: Lens' AppState Config
-asConfig = lens _asConfig $ \s b -> s { _asConfig = b }
-
-asViewFocus :: Lens' AppState (Map ViewName (FocusRing Name))
-asViewFocus = lens _asViewFocus $ \s b -> s { _asViewFocus = b }
-
-asGame :: Lens' AppState Game
-asGame = lens _asGame $ \s b -> s { _asGame = b }
-
-asAnalyser :: Lens' AppState (Maybe Analyser)
-asAnalyser = lens _asAnalyser $ \s b -> s { _asAnalyser = b }
-
-asExplorer :: Lens' AppState Explorer
-asExplorer = lens _asExplorer $ \s b -> s { _asExplorer = b }
-
-asConfigEditor :: Lens' AppState (Editor Text Name)
-asConfigEditor = lens _asConfigEditor $ \s b -> s { _asConfigEditor = b }
-
-asMessage :: Lens' AppState (Maybe Text)
-asMessage = lens _asMessage $ \s b -> s { _asMessage = b }
-
-asRelaunch :: Lens' AppState Bool
-asRelaunch = lens _asRelaunch $ \s b -> s { _asRelaunch = b }
-
 initialState :: BChan AppEvent -> Config -> AppState
 initialState chan cfg =
   AppState chan cfg focus viewFocus newGame Nothing defaultExplorer edit Nothing False
@@ -1134,23 +1055,19 @@ initialState chan cfg =
   edit = editor ConfigEditor Nothing (Text.decodeUtf8 $(embedFile "app/Main.hs"))
 
 focusedView :: Getter AppState (Maybe ViewName)
-focusedView = asFocusL . to focusGetCurrent
+focusedView = asFocus . to focusGetCurrent
 
 setView :: ViewName -> AppState -> AppState
-setView v = asFocusL %~ focusSetCurrent v
+setView v = asFocus %~ focusSetCurrent v
 
 viewName :: AppState -> ViewName
 viewName s = fromMaybe (s ^. asConfig . defaultViewL) $ s ^. focusedView
 
-withFocus :: (ViewName -> Name -> Action a) -> Action a
-withFocus f = do
-  vn <- fromJust . focusGetCurrent <$> use asFocusL
-  n <- fromJust . focusGetCurrent . fromJust <$> use (asViewFocus . at vn)
-  f vn n
-
 focusedWidget :: AppState -> Maybe (FocusRing Name)
 focusedWidget s = s ^. asViewFocus . at (viewName s)
 
+addPV :: Int -> UCI.Score -> Maybe UCI.Bounds -> Unboxed.Vector Ply
+      -> Vector PredictedVariation -> Vector PredictedVariation
 addPV i score bounds pv pvs
   | i == Vector.length pvs
   = pvs <> Vector.singleton (PV score bounds pv)
@@ -1162,7 +1079,7 @@ app = Brick.App { .. } where
   appStartEvent = execStateT $ do
     reloadConfigFile False
     restore
-    join . use $ asConfig . startupAction
+    join . use $ asConfig . onStartupL
   appDraw s = renderView (viewName s) s
   appHandleEvent s = go where
     go (VtyEvent e) = handleViewEvent vn n s e where
@@ -1197,14 +1114,14 @@ instance Binary Persistent
 
 persistent :: Action Persistent
 persistent =
-  Persistent <$> use (asFocusL . to focusGetCurrent . to fromJust)
+  Persistent <$> use (asFocus . to focusGetCurrent . to fromJust)
              <*> use asGame
 
 persist, restore :: Action ()
 persist = liftIO . Dyre.saveBinaryState =<< persistent
 restore = do
   (Persistent vn g) <- liftIO . Dyre.restoreBinaryState =<< persistent
-  asFocusL %= focusSetCurrent vn
+  asFocus %= focusSetCurrent vn
   asGame .= g
 
 ------------------------------------------------------------------------------

@@ -16,7 +16,8 @@ library
     exposed-modules:  Annalise
     other-modules:    Paths_annalise,
                       Brick.Widgets.Chess,
-                      Data.Tree.NonEmpty
+                      Data.Tree.NonEmpty,
+                      TH
 
     build-depends:    base >=4.14,
                       binary,
@@ -30,6 +31,7 @@ library
                       file-embed,
                       lens,
                       mtl >= 2.2.2,
+                      natural-transformation,
                       o-clock,
                       optparse-applicative,
                       rosezipper,
