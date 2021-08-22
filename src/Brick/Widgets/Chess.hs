@@ -29,7 +29,8 @@ data InnerBorders = InnerBorders | NoInnerBorders deriving (Eq, Read, Show)
 
 type Handler n = Color -> Position -> Bool -> [[Square]] -> [[Widget n]]
 
-renderPosition :: InnerBorders -> Handler n -> Maybe Color -> Position -> Bool -> Widget n
+renderPosition :: InnerBorders -> Handler n -> Maybe Color -> Position -> Bool
+               -> Widget n
 renderPosition ((== InnerBorders) -> innerBorders) f pers p foc
   = renderTable
   . setDefaultColAlignment AlignCenter
@@ -59,7 +60,7 @@ renderPosition2 n char tgt = renderPosition NoInnerBorders $ \persp pos foc ->
   insertSpaces . (map . map) (draw foc pos)
  where
   draw foc pos sq = putCursorIf (foc && tgt == Just sq) n (0, 0) $
-                attr pos sq $ str [char pos sq]
+                    attr pos sq $ str [char pos sq]
 
 renderPosition3 :: PositionRenderer n
 renderPosition3 n char tgt = renderPosition NoInnerBorders $ \persp pos foc ->
@@ -80,10 +81,10 @@ insertSpaces = map $ (str " " :) . (<> [str " "]) . intersperse (str " ")
 
 insertHalfBlocks :: Color -> [[Widget n]] -> [[Widget n]]
 insertHalfBlocks persp = snd . mapAccumL f persp where
-  f c r = (opponent c, intercalateBlocks c r)
+  f c r = (opponent c, intersperseBlocks c r)
 
-intercalateBlocks :: Color -> [Widget n] -> [Widget n]
-intercalateBlocks c xs = h c : head xs : concat ys <> [i c'] where
+intersperseBlocks :: Color -> [Widget n] -> [Widget n]
+intersperseBlocks c xs = h c : head xs : concat ys <> [i c'] where
   (c', ys) = mapAccumL f (opponent c) (tail xs)
   f c w = (opponent c, [g c, w])
   g Black = withAttr whiteToBlackSquare $ str "▐"
@@ -92,7 +93,6 @@ intercalateBlocks c xs = h c : head xs : concat ys <> [i c'] where
   h White = str " "
   i Black = str " "
   i White = str "▌"
-
 
 allPieces :: ((Color, PieceType), (Color, PieceType))
 allPieces = ((Black, Pawn), (White, King))
@@ -112,7 +112,7 @@ withEmptyAs p e pos sq = case pieceAt pos sq of
   Just piece -> p piece
   Nothing    -> e $ if isLight sq then White else Black
 
-whitePiece, blackPiece, whiteSquare, blackSquare :: AttrName
+whitePiece, blackPiece, whiteSquare, blackSquare, whiteToBlackSquare, blackToWhiteSquare :: AttrName
 whitePiece = attrName "whitePiece"
 blackPiece = attrName "blackPiece"
 whiteSquare = attrName "whiteSquare"

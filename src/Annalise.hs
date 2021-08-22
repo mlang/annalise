@@ -42,7 +42,6 @@ module Annalise (
 ) where
 
 import qualified Brick.AttrMap                as Brick
-import TH
 import           Brick.BChan                  (BChan, newBChan,
                                                writeBChanNonBlocking)
 import           Brick.Focus                  (FocusRing, focusGetCurrent,
@@ -54,6 +53,7 @@ import           Brick.Types                  (BrickEvent (AppEvent, VtyEvent),
                                                Padding (..),
                                                ViewportType (Both, Horizontal, Vertical),
                                                Widget)
+import           Brick.Util                   (bg, fg, on)
 import           Brick.Widgets.Border         (border, borderWithLabel)
 import           Brick.Widgets.Center         (hCenter, vCenter)
 import           Brick.Widgets.Chess
@@ -86,7 +86,9 @@ import           Control.Lens                 (Getter, Getting, Lens',
                                                view, (%=), (%~), (&), (.=),
                                                (.~), (<>=), (<>~), (<~), (?~),
                                                (^.), (^?!), (^?))
-import           Control.Lens.TH              (mappingNamer, makeLensesWith, lensField, lensRules, makeLenses, makePrisms)
+import           Control.Lens.TH              (makeLenses, makeLensesWith,
+                                               makePrisms)
+import           Control.Lens.TH.Suffix       (suffixRules)
 import           Control.Monad                (forever, join, void, when)
 import           Control.Monad.IO.Class       (MonadIO (liftIO))
 import           Control.Monad.State          (StateT, evalStateT, execStateT,
@@ -118,7 +120,7 @@ import           Data.Tree.NonEmpty           (breadcrumbs, listToForest)
 import           Data.Tree.Zipper             (Full, TreePos, forest,
                                                fromForest, label, nextTree)
 import qualified Data.Tree.Zipper             as TreePos
-import Data.Vector (Vector)
+import           Data.Vector                  (Vector)
 import qualified Data.Vector                  as Vector
 import qualified Data.Vector.Unboxed          as Unboxed
 import           GHC.Generics                 (Generic)
@@ -127,7 +129,6 @@ import           Game.Chess.PGN               (PGN, readPGNFile)
 import qualified Game.Chess.PGN               as PGN
 import           Game.Chess.Polyglot
 import           Game.Chess.SAN
-import Brick.Util (fg, bg, on)
 import qualified Game.Chess.UCI               as UCI
 import qualified Graphics.Vty                 as Vty
 import           Options.Applicative          hiding (str)
@@ -246,7 +247,7 @@ data Config = Config
   , engineStartupTimeout :: Time Second
   , engineMultiPV        :: Maybe Int
   , engineThreads        :: Maybe Int
-  , positionRenderer :: PositionRenderer Name
+  , positionRenderer     :: PositionRenderer Name
   , channelSize          :: Int
   , theme                :: Brick.AttrMap
   , helpKeymap           :: Keymap
@@ -563,7 +564,7 @@ pgnBrowserEnter = use (asExplorer . eGameChooser) >>= \case
     Nothing -> pure ()
   Just (GameChooser (ChooseGame (_, l))) -> case snd <$> Brick.listSelectedElement l of
     Just game -> do
-      let forest = breadcrumbs . fmap (^. PGN.annPly) <$> game ^. PGN.cgForest
+      let forest = breadcrumbs . fmap (view PGN.annPly) <$> game ^. PGN.cgForest
       case nextTree (fromForest forest) of
         Just treePos -> do
           asExplorer . eTreePos .= treePos

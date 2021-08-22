@@ -16,8 +16,8 @@ library
     exposed-modules:  Annalise
     other-modules:    Paths_annalise,
                       Brick.Widgets.Chess,
-                      Data.Tree.NonEmpty,
-                      TH
+                      Control.Lens.TH.Suffix,
+                      Data.Tree.NonEmpty
 
     build-depends:    base >=4.14,
                       binary,

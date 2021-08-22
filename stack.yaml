@@ -5,6 +5,5 @@ packages:
 
 extra-deps:
 - brick-skylighting-0.3
-- git: https://github.com/mlang/chessIO.git
-  commit: b6588abeffa360f85a4ed6bc271c189d71853e68
+- chessIO-0.9.1.0
 - o-clock-1.2.1
