@@ -16,6 +16,7 @@ module Annalise (
         , engineStartupTimeout
         , engineMultiPV
         , engineThreads
+        , positionRenderer
         , channelSize
         , theme
         , pgnDirectory
@@ -28,6 +29,8 @@ module Annalise (
 , sec
 , ViewName(..)
 , defaultConfig
+, PositionRenderer
+, renderPosition1, renderPosition2, renderPosition3, renderPosition4
 , defaultTheme
 , kate, breezeDark, pygments, espresso, tango, haddock, monochrome, zenburn
 , Action
@@ -124,6 +127,7 @@ import           Game.Chess.PGN               (PGN, readPGNFile)
 import qualified Game.Chess.PGN               as PGN
 import           Game.Chess.Polyglot
 import           Game.Chess.SAN
+import Brick.Util (fg, bg, on)
 import qualified Game.Chess.UCI               as UCI
 import qualified Graphics.Vty                 as Vty
 import           Options.Applicative          hiding (str)
@@ -242,6 +246,7 @@ data Config = Config
   , engineStartupTimeout :: Time Second
   , engineMultiPV        :: Maybe Int
   , engineThreads        :: Maybe Int
+  , positionRenderer :: PositionRenderer Name
   , channelSize          :: Int
   , theme                :: Brick.AttrMap
   , helpKeymap           :: Keymap
@@ -276,7 +281,15 @@ makeLenses ''AppState
 
 defaultTheme :: Style -> Brick.AttrMap
 defaultTheme sty = Brick.attrMap Vty.defAttr $
-  [] <> attrMappingsForStyle sty
+  [ (whiteSquare <> blackPiece, fg Vty.black)
+  , (blackSquare <> blackPiece, fg Vty.black)
+  , (whiteSquare <> whitePiece, fg Vty.white)
+  , (blackSquare <> whitePiece, fg Vty.white)
+  , (blackSquare, bg Vty.green)
+  , (whiteSquare, bg Vty.cyan)
+  , (whiteToBlackSquare, Vty.cyan `on` Vty.green)
+  , (blackToWhiteSquare, Vty.green `on` Vty.cyan)
+  ] <> attrMappingsForStyle sty
 
 defaultConfig :: Config
 defaultConfig = Config { .. } where
@@ -285,6 +298,7 @@ defaultConfig = Config { .. } where
   engineStartupTimeout = sec 5
   engineMultiPV = Nothing
   engineThreads = Nothing
+  positionRenderer = renderPosition2
   channelSize = 20
   theme = defaultTheme breezeDark
   helpKeymap = defaultHelpKeymap
@@ -310,6 +324,7 @@ commandLine cfg = Config <$>
   pure (engineStartupTimeout cfg) <*>
   optional (option auto $ long "engine-multi-pv" <> metavar "N" <> case engineMultiPV cfg of {Just i -> value i <> showDefault; Nothing -> mempty}) <*>
   optional (option auto $ long "engine-threads" <> metavar "N" <> case engineThreads cfg of {Just i -> value i <> showDefault; Nothing -> mempty}) <*>
+  pure (positionRenderer cfg) <*>
   option auto (long "channel-size"
             <> metavar "INT"
             <> help "Event channel size"
@@ -434,13 +449,13 @@ ePlyList (view eTreePos -> tp) = elemList PlyList ply plies where
 renderExplorer :: AppState -> [Widget Name]
 renderExplorer s = go $ view asExplorer s where
   go e = fb <> [ui] where
-    ui = (hLimit 9 list <+> hLimit 23 board <+> var)
+    ui = (hLimit 9 list <+> board <+> var)
      <=> fill ' '
      <=> renderMessage s
     list = withFocusRing' s ExplorerView
       (Brick.renderList (drawPly (ePreviousPosition e))) (ePlyList e)
     drawPly p foc = putCursorIf foc PlyList (0, 0) . str . toSAN p
-    board = renderPosition Chessboard (eCurrentPosition e) (Just (color (ePreviousPosition e))) Nothing english True
+    board = (s ^. asConfig . positionRendererL) Chessboard (en `withEmptyAs` space) Nothing (Just (color (ePreviousPosition e))) (eCurrentPosition e) True
     var = strWrap $ varToSAN (e ^. eInitial) (e ^. eTreePos . to label)
     fb = case e^.eGameChooser of
       Just (GameChooser (ChooseFile fb)) ->
@@ -1015,14 +1030,14 @@ renderGame s = [w $ s ^. asGame] where
     UCI.MateIn hm | hm >= 0 -> str $ "#" <> show hm
                   | otherwise -> str $ "#" <> show hm
 
-  w g = (hLimit 23 (hCenter board) <+> var)
+  w g = (board <+> var)
     <=> (hLimit 21 . vLimit 1 $ sideToMove <+> fill ' ' <+> lastPly)
     <=> input
     <=> pv
     <=> fill ' '
     <=> status
    where
-    board = renderPosition Chessboard pos (g ^. gPerspective) cursor english (null $ g ^. gInput)
+    board = (s ^. asConfig . positionRendererL) Chessboard (en `withEmptyAs` space) cursor (g ^. gPerspective) pos (null $ g ^. gInput)
     cursor | null (g ^. gInput) = Just $ g ^. gCursor
            | otherwise          = Nothing
     var = strWrap . varToSAN (g ^. gInitial) $ g ^. gPlies
