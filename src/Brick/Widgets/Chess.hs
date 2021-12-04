@@ -49,14 +49,14 @@ type PositionRenderer n = n -> (Position -> Square -> Char) ->
                           Widget n
 
 renderPosition1 :: PositionRenderer n
-renderPosition1 n ch tgt = renderPosition NoInnerBorders $ \persp pos foc ->
+renderPosition1 n ch tgt = renderPosition NoInnerBorders $ \_ pos foc ->
   (map . map) (draw foc pos)
  where
   draw foc pos sq = putCursorIf (foc && tgt == Just sq) n (0, 0) $
                     attr pos sq $ str [ch pos sq]
 
 renderPosition2 :: PositionRenderer n
-renderPosition2 n char tgt = renderPosition NoInnerBorders $ \persp pos foc ->
+renderPosition2 n char tgt = renderPosition NoInnerBorders $ \_ pos foc ->
   insertSpaces . (map . map) (draw foc pos)
  where
   draw foc pos sq = putCursorIf (foc && tgt == Just sq) n (0, 0) $
@@ -70,7 +70,7 @@ renderPosition3 n char tgt = renderPosition NoInnerBorders $ \persp pos foc ->
                     attr pos sq $ str [char pos sq]
 
 renderPosition4 :: PositionRenderer n
-renderPosition4 n char tgt = renderPosition InnerBorders $ \persp pos foc ->
+renderPosition4 n char tgt = renderPosition InnerBorders $ \_ pos foc ->
   (map . map) (draw foc pos)
  where
   draw foc pos sq = putCursorIf (foc && tgt == Just sq) n (1, 0) $

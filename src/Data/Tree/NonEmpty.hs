@@ -3,7 +3,7 @@
 module Data.Tree.NonEmpty ( listToForest, branch, breadcrumbs ) where
 
 import           Control.Natural    (type (~>))
-import           Data.List.NonEmpty (NonEmpty, cons, nonEmpty, singleton, uncons)
+import           Data.List.NonEmpty (NonEmpty, cons, nonEmpty, uncons)
 import           Data.Maybe         (maybeToList)
 import           Data.Tree          (Tree (Node), foldTree, unfoldTree)
 
@@ -14,4 +14,4 @@ branch :: NonEmpty ~> Tree
 branch = unfoldTree $ fmap maybeToList . uncons
 
 breadcrumbs :: Tree a -> Tree (NonEmpty a)
-breadcrumbs = foldTree $ \a -> Node (singleton a) . (fmap . fmap) (cons a)
+breadcrumbs = foldTree $ \a -> Node (pure a) . (fmap . fmap) (cons a)
