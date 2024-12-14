@@ -1,9 +1,12 @@
+{-# LANGUAGE OverloadedLabels #-}
+{-# LANGUAGE NoFieldSelectors #-}
+{-# LANGUAGE DeriveGeneric   #-}
 {-# LANGUAGE FlexibleInstances     #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE OverloadedStrings     #-}
-{-# LANGUAGE TemplateHaskell #-}
 module Brick.Widgets.HaskellEditor where
 
+import Data.Generics.Labels ()
 import           Brick.Types               (EventM, Widget, zoom, BrickEvent(VtyEvent))
 import Graphics.Vty (Event(..), Key(..), Modifier(..))
 import           Brick.Widgets.Core        (Named (getName), txt, vBox)
@@ -15,14 +18,13 @@ import           Data.Text                 (Text)
 import qualified Data.Text                 as Text (unlines)
 import           Skylighting               (Syntax, defaultSyntaxMap,
                                             lookupSyntax)
-import           Control.Lens.TH              (makeLenses)
+import           GHC.Generics                 (Generic)
+
 
 data HaskellEditor n = HaskellEditor
-  { _heEditor    :: Editor Text n
-  , _heHighlight :: Bool
-  }
-
-makeLenses ''HaskellEditor
+  { editor    :: Editor Text n
+  , highlight :: Bool
+  } deriving (Generic)
 
 instance Named (HaskellEditor n) n where
   getName (HaskellEditor e _) = getName e
@@ -35,7 +37,7 @@ renderHaskellEditor hasFocus (HaskellEditor e hl) =
   renderEditor (if hl then skylight else plain) hasFocus e
 
 handleHaskellEditorEvent :: Eq n => Event -> EventM n (HaskellEditor n) ()
-handleHaskellEditorEvent = zoom heEditor . handleEditorEvent . VtyEvent
+handleHaskellEditorEvent = zoom #editor . handleEditorEvent . VtyEvent
   
 haskell :: Syntax
 haskell = fromJust $ "haskell" `lookupSyntax` defaultSyntaxMap

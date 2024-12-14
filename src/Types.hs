@@ -1,5 +1,7 @@
-{-# LANGUAGE DeriveGeneric   #-}
-{-# LANGUAGE TemplateHaskell #-}
+{-# LANGUAGE DeriveGeneric         #-}
+{-# LANGUAGE DuplicateRecordFields #-}
+{-# LANGUAGE NoFieldSelectors      #-}
+{-# LANGUAGE TemplateHaskell       #-}
 module Types where
 
 import qualified Brick.AttrMap                as Brick
@@ -7,13 +9,12 @@ import           Brick.BChan                  (BChan)
 import           Brick.Focus                  (FocusRing)
 import qualified Brick.Types                  as Brick
 import           Brick.Widgets.Chess
-import           Brick.Widgets.HaskellEditor (HaskellEditor)
 import qualified Brick.Widgets.FileBrowser    as Brick
+import           Brick.Widgets.HaskellEditor  (HaskellEditor)
 import qualified Brick.Widgets.List           as Brick
 import           Control.Concurrent           (ThreadId)
 import           Control.Concurrent.STM.TChan (TChan)
-import           Control.Lens.TH              (makeLenses, makeLensesWith,
-                                               makePrisms)
+import           Control.Lens.TH              (makePrisms)
 import           Control.Lens.TH.Suffix       (suffixRules)
 import           Control.Monad.State          (StateT)
 import           Data.Binary                  (Binary)
@@ -24,10 +25,11 @@ import           Data.Text                    (Text)
 import           Data.Tree.Zipper             (Full, TreePos)
 import           Data.Vector                  (Vector)
 import qualified Data.Vector.Unboxed          as Unboxed
-import           GHC.Generics                 (Generic)
-import           Game.Chess                   (PieceType, startpos, Color, Ply, Position, Square(E1))
+import           Game.Chess                   (Color, PieceType, Ply, Position,
+                                               Square (E1), startpos)
 import qualified Game.Chess.PGN               as PGN
 import qualified Game.Chess.UCI               as UCI
+import           GHC.Generics                 (Generic)
 import qualified Graphics.Vty                 as Vty
 import           Time.Units                   (Second, Time)
 
@@ -48,36 +50,30 @@ data Name = Help
 type AppEvent = [UCI.Info]
 
 data Game = Game
-  { _gInitial     :: Position
-  , _gPlies       :: [Ply]
-  , _gPerspective :: Maybe Color
-  , _gInput       :: String
-  , _gFrom        :: Maybe Square
-  , _gCursor      :: Square
+  { initial     :: Position
+  , plies       :: [Ply]
+  , perspective :: Maybe Color
+  , input       :: String
+  , from        :: Maybe Square
+  , cursor      :: Square
   } deriving (Generic)
 
 instance Binary Game
-
-makeLenses ''Game
 
 defaultGame :: Game
 defaultGame = Game startpos [] Nothing "" Nothing E1
 
 data PredictedVariation = PV
-  { _pvScore  :: !UCI.Score
-  , _pvBounds :: !(Maybe UCI.Bounds)
-  , _pvPlies  :: !(Unboxed.Vector Ply)
-  }
-
-makeLenses ''PredictedVariation
+  { score  :: !UCI.Score
+  , bounds :: !(Maybe UCI.Bounds)
+  , plies  :: !(Unboxed.Vector Ply)
+  } deriving (Generic)
 
 data Analyser = Analyser
-  { _aEngine :: UCI.Engine
-  , _aReader :: Maybe (TChan UCI.BestMove, ThreadId)
-  , _aPVs    :: Vector PredictedVariation
-  }
-
-makeLenses ''Analyser
+  { engine :: UCI.Engine
+  , reader :: Maybe (TChan UCI.BestMove, ThreadId)
+  , pvs    :: Vector PredictedVariation
+  } deriving (Generic)
 
 data GameChooserStep = ChooseFile (Brick.FileBrowser Name)
                      | ChooseGame (Brick.FileBrowser Name, Brick.GenericList Name Seq PGN.Game)
@@ -85,26 +81,22 @@ data GameChooserStep = ChooseFile (Brick.FileBrowser Name)
 makePrisms ''GameChooserStep
 
 data GameChooser = GameChooser
-  { _gcStep :: GameChooserStep
-  }
-
-makeLenses ''GameChooser
+  { step :: GameChooserStep
+  } deriving (Generic)
 
 data Explorer = Explorer
-  { _eInitial     :: Position
-  , _eTreePos     :: TreePos Full (NonEmpty Ply)
-  , _eGameChooser :: Maybe GameChooser
-  }
-
-makeLenses ''Explorer
+  { initial     :: Position
+  , treePos     :: TreePos Full (NonEmpty Ply)
+  , gameChooser :: Maybe GameChooser
+  } deriving (Generic)
 
 type Action = Brick.EventM Name AppState
 
 data Binding = Binding
-  { bindingDescription :: Text
-  , bindingGuard       :: Action Bool
-  , bindingAction      :: Action ()
-  }
+  { description :: Text
+  , guard       :: Action Bool
+  , action      :: Action ()
+  } deriving (Generic)
 
 simpleBinding :: Text -> Action () -> Binding
 simpleBinding desc = Binding desc (pure True)
@@ -133,23 +125,20 @@ data Config = Config
   , defaultView          :: ViewName
   , configFile           :: FilePath
   , dyreError            :: Maybe String
-  }
+  } deriving (Generic)
 
 data AppState = AppState
-  { _asChannel      :: BChan AppEvent
-  , _asConfig       :: Config
-  , _asFocus        :: FocusRing ViewName
-  , _asViewFocus    :: Map ViewName (FocusRing Name)
-  , _asGame         :: Game
-  , _asAnalyser     :: Maybe Analyser
-  , _asExplorer     :: Explorer
-  , _asConfigEditor :: HaskellEditor Name
-  , _asMessage      :: Maybe Text
-  , _asRelaunch     :: Bool
-  }
-
-makeLensesWith suffixRules ''Config
-makeLenses ''AppState
+  { channel      :: BChan AppEvent
+  , config       :: Config
+  , focus        :: FocusRing ViewName
+  , viewFocus    :: Map ViewName (FocusRing Name)
+  , game         :: Game
+  , analyser     :: Maybe Analyser
+  , explorer     :: Explorer
+  , configEditor :: HaskellEditor Name
+  , message      :: Maybe Text
+  , relaunch     :: Bool
+  } deriving (Generic)
 
 data Persistent = Persistent ViewName Game
                   deriving (Generic)
@@ -161,4 +150,3 @@ data Info = UnboundEvent Vty.Event
           | SeveralPiecesCanMoveHere Square Position [Ply]
           | NotAllowedToMove Color PieceType Square
           deriving (Eq, Generic, Show)
-
