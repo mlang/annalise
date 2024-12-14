@@ -51,21 +51,18 @@ import           Brick.Focus                  (FocusRing, focusGetCurrent,
 import qualified Brick.Forms                  as Brick
 import qualified Brick.Main                   as Brick
 import           Brick.Types                  (BrickEvent (AppEvent, VtyEvent),
-                                               EventM, Location (..), Next,
-                                               Padding (..),
-                                               ViewportType (Both, Horizontal, Vertical),
-                                               Widget)
+                                               EventM, Location (..),
+                                               ViewportType (Both, Vertical),
+                                               Widget, zoom)
 import           Brick.Util                   (bg, fg, on)
 import           Brick.Widgets.Border         (border, borderWithLabel)
-import           Brick.Widgets.Center         (hCenter, vCenter)
+import           Brick.Widgets.Center         (hCenter)
 import           Brick.Widgets.Chess
-import           Brick.Widgets.Core           (emptyWidget, fill, hBox, hLimit,
-                                               hLimitPercent, padBottom,
-                                               padLeft, padRight, padTop,
-                                               showCursor, str, strWrap, txt,
-                                               txtWrap, vBox, vLimit,
-                                               vLimitPercent, viewport, (<+>),
-                                               (<=>))
+import           Brick.Widgets.Core           (Padding (Max, Pad), emptyWidget,
+                                               fill, hBox, hLimit, padLeft,
+                                               padRight, padTop, showCursor,
+                                               str, strWrap, txt, txtWrap, vBox,
+                                               vLimit, viewport, (<+>), (<=>))
 import           Brick.Widgets.Edit           (editContentsL, editor,
                                                getEditContents,
                                                handleEditorEvent, renderEditor)
@@ -79,26 +76,22 @@ import qualified Config.Dyre.Relaunch         as Dyre
 import           Control.Concurrent           (forkIO, killThread)
 import           Control.Concurrent.STM       (atomically)
 import           Control.Concurrent.STM.TChan
-import           Control.Lens                 (Getter, Getting, Lens',
-                                               LensLike', _2, _Just, _Wrapped,
-                                               assign, at, from, ix, lens,
-                                               modifying, preuse, prism', reuse,
-                                               to, traverseOf, use, uses, view,
-                                               (%=), (%~), (&), (.=), (.~),
-                                               (<>=), (<>~), (<~), (?~), (^.),
+import           Control.Lens                 (Getter, Lens', _2, _Just,
+                                               _Wrapped, assign, at, from, ix,
+                                               modifying, preuse, to, use, uses,
+                                               view, (%=), (%~), (&), (.=),
+                                               (.~), (<>=), (<~), (?~), (^.),
                                                (^?!), (^?))
 import           Control.Lens.TH              (makeLenses)
 import           Control.Monad                (forever, join, void, when)
 import           Control.Monad.IO.Class       (MonadIO (liftIO))
-import           Control.Monad.State          (MonadState (..), evalStateT,
-                                               execStateT, get, lift, modify,
-                                               put)
+import           Control.Monad.State          (MonadState (..), get, modify)
 import           Data.Bifunctor               (first, second)
 import           Data.ByteString              (ByteString)
 import qualified Data.ByteString              as ByteString
 import           Data.Char                    (toLower)
 import           Data.FileEmbed               (embedFile)
-import           Data.Foldable                (foldl', for_, toList)
+import           Data.Foldable                (foldl', toList)
 import           Data.Functor                 ((<&>))
 import           Data.List                    (elemIndex, find, intercalate,
                                                intersperse, isPrefixOf, sort)
@@ -480,8 +473,8 @@ pgnBrowserIsSearching =
 
 pgnBrowserHandler :: EventHandler
 pgnBrowserHandler = EventHandler (asConfig . pgnBrowserKeymapL) $ \e -> do
-  handleEvent (asExplorer . eGameChooser . _Just . gcStep . _ChooseFile) handleFileBrowserEvent e
-  continue
+  zoom (asExplorer . eGameChooser . _Just . gcStep . _ChooseFile) $
+    handleFileBrowserEvent e
 
 
 defaultPgnBrowserKeymap :: Keymap
@@ -507,9 +500,8 @@ defaultGameListKeymap = Map.fromList
 
 gameListHandler :: EventHandler
 gameListHandler = EventHandler (asConfig . gameListKeymapL) $ \e -> do
-  handleEvent (asExplorer . eGameChooser . _Just . gcStep . _ChooseGame . _2)
+  zoom (asExplorer . eGameChooser . _Just . gcStep . _ChooseGame . _2) $
     Brick.handleListEvent e
-  continue
 
 ------------------------------------------------------------------------------
 
@@ -671,23 +663,23 @@ gotoBeginningOfConfig = modifying (asConfigEditor . editContentsL) Zipper.gotoBO
 gotoEndOfConfig       = modifying (asConfigEditor . editContentsL) Zipper.gotoEOF
 
 vScrollBy :: Name -> Int -> Action ()
-vScrollBy n = lift . Brick.vScrollBy (Brick.viewportScroll n)
+vScrollBy n = Brick.vScrollBy (Brick.viewportScroll n)
 
 scrollRebuildErrorUp, scrollRebuildErrorDown :: Action ()
 scrollRebuildErrorUp = vScrollBy RebuildError (-1)
 scrollRebuildErrorDown = vScrollBy RebuildError 1
 
-continue :: Action (Next AppState)
-continue = lift . Brick.continue =<< get
+continue :: Action ()
+continue = return ()
 
-relaunch :: Action (Next AppState)
+relaunch :: Action ()
 relaunch = do
   persist
   asRelaunch .= True
   quit
 
-quit :: Action (Next AppState)
-quit = lift . Brick.halt =<< get
+quit :: Action ()
+quit = Brick.halt
 
 defaultConfigEditorKeymap :: Keymap
 defaultConfigEditorKeymap = Map.fromList
@@ -723,18 +715,11 @@ defaultConfigEditorKeymap = Map.fromList
 
 data EventHandler = EventHandler
   (Getter AppState Keymap)
-  (Vty.Event -> Action (Next AppState))
-
-handleEvent :: LensLike' (EventM Name) AppState a
-            -> (Vty.Event -> a -> EventM Name a)
-            -> Vty.Event
-            -> Action ()
-handleEvent l h e = put =<< lift . traverseOf l (h e) =<< get
+  (Vty.Event -> Action ())
 
 configEditorHandler :: EventHandler
 configEditorHandler = EventHandler (asConfig . configEditorKeymapL) $ \e -> do
-  handleEvent asConfigEditor handleEditorEvent e
-  continue
+  zoom asConfigEditor $ handleEditorEvent (VtyEvent e)
 
 defaultChessboardKeymap :: Keymap
 defaultChessboardKeymap = Map.fromList $
@@ -846,7 +831,7 @@ takeback = changeGame . modifying (asGame . gPlies) $ \case
   xs -> init xs
 
 handleViewEvent :: ViewName -> Name
-                -> AppState -> Vty.Event -> EventM Name (Next AppState)
+                -> Vty.Event -> EventM Name AppState ()
 handleViewEvent = go where
   go HelpView         _       = dispatch helpHandler
   go ChessboardView   _       = dispatch chessboardHandler
@@ -854,19 +839,19 @@ handleViewEvent = go where
   go ExplorerView FileBrowser = dispatch pgnBrowserHandler
   go ExplorerView GameList    = dispatch gameListHandler
   go ConfigEditorView _       = dispatch configEditorHandler
-  dispatch (EventHandler keymapL fallback) s e = evalStateT action s where
-    local = case Map.lookup e (s ^. keymapL) of
+  dispatch (EventHandler keymapL fallback) e = get >>= action where
+    local s = case Map.lookup e (s ^. keymapL) of
       Just b -> do
         g <- bindingGuard b
         if g then bindingAction b else fallback e
       Nothing -> fallback e
-    action = do
+    action s = do
       clearMessage
       case Map.lookup e (s ^. asConfig . globalKeymapL) of
         Just b -> do
           g <- bindingGuard b
-          if g then bindingAction b else local
-        Nothing -> local
+          if g then bindingAction b else local s
+        Nothing -> local s
 
 ------------------------------------------------------------------------------
 
@@ -1006,22 +991,23 @@ addPV i score bounds pv pvs
 
 app :: Brick.App AppState AppEvent Name
 app = Brick.App { .. } where
-  appStartEvent = execStateT $ do
+  appStartEvent = do
     reloadConfigFile False
     loadBook
     restore
     join . use $ asConfig . onStartupL
   appDraw s = renderView (viewName s) s
-  appHandleEvent s = go where
-    go (VtyEvent e) = handleViewEvent vn n s e where
-      vn = viewName s
-      n = fromJust . focusGetCurrent $ s ^?! asViewFocus . ix vn
+  appHandleEvent = go where
+    go (VtyEvent e) = do
+      vn <- viewName <$> get
+      s <- get
+      let n = fromJust . focusGetCurrent $ s ^?! asViewFocus . ix vn
+      handleViewEvent vn n e
     go (AppEvent i) = case (find isMultiPV i, find isScore i, find isPV i) of
       (Just (UCI.MultiPV i'), Just (UCI.Score score bounds), Just (UCI.PV pv)) ->
-        Brick.continue $
-        s & asAnalyser . traverse . aPVs %~ addPV (pred i') score bounds pv
-      _ -> Brick.continue s
-    go _            = Brick.continue s
+        modifying (asAnalyser . traverse . aPVs) $ addPV (pred i') score bounds pv
+      _ -> pure ()
+    go _            = pure ()
   appAttrMap = view $ asConfig . themeL
   appChooseCursor s
     | isJust $ s ^? asViewFocus . ix (viewName s)
@@ -1056,9 +1042,7 @@ main :: Config -> IO ()
 main inCfg = do
   cfg <- execParser $ info (commandLine inCfg <**> helper) $ briefDesc
   chan <- newBChan (channelSize cfg)
-  let buildVty = Vty.mkVty Vty.defaultConfig
-  vty <- buildVty
-  appState <- Brick.customMain vty buildVty (Just chan) app (initialState chan cfg)
+  (appState, _) <- Brick.customMainWithDefaultVty (Just chan) app (initialState chan cfg)
   when (appState ^. asRelaunch) $ Dyre.relaunchMaster Nothing
 
 showError :: Config -> String -> Config

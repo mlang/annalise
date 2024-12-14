@@ -98,15 +98,15 @@ data Explorer = Explorer
 
 makeLenses ''Explorer
 
-type Action = StateT AppState (Brick.EventM Name)
+type Action = Brick.EventM Name AppState
 
 data Binding = Binding
   { bindingDescription :: Text
   , bindingGuard       :: Action Bool
-  , bindingAction      :: Action (Brick.Next AppState)
+  , bindingAction      :: Action ()
   }
 
-simpleBinding :: Text -> Action (Brick.Next AppState) -> Binding
+simpleBinding :: Text -> Action () -> Binding
 simpleBinding desc = Binding desc (pure True)
 
 type Keymap = Map Vty.Event Binding

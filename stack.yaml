@@ -1,9 +1,6 @@
-resolver: nightly-2021-12-03
-compiler: ghc-9.0.1
+resolver: lts-23.0
 packages:
 - .
-
 extra-deps:
-- brick-skylighting-0.3
-- chessIO-0.9.2.0@sha256:d24a701dbbd66257ec3f1d5e1b410e439435eacd45fdbea42ef84103bd0ad033,5029
-- o-clock-1.2.1
+- brick-skylighting-1.0
+- chessIO-0.9.5.0
