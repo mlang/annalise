@@ -16,6 +16,7 @@ library
     exposed-modules:  Annalise
     other-modules:    Paths_annalise,
                       Brick.Widgets.Chess,
+                      Brick.Widgets.HaskellEditor,
                       Control.Lens.TH.Suffix,
                       Data.Tree.NonEmpty,
                       Types

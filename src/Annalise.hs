@@ -42,6 +42,7 @@ module Annalise (
 , annalise
 ) where
 
+import           Brick.Widgets.HaskellEditor (handleHaskellEditorEvent, haskellEditor, renderHaskellEditor, heEditor)
 import qualified Brick.AttrMap                as Brick
 import           Brick.BChan                  (BChan, newBChan,
                                                writeBChanNonBlocking)
@@ -63,7 +64,7 @@ import           Brick.Widgets.Core           (Padding (Max, Pad), emptyWidget,
                                                padRight, padTop, showCursor,
                                                str, strWrap, txt, txtWrap, vBox,
                                                vLimit, viewport, (<+>), (<=>))
-import           Brick.Widgets.Edit           (editContentsL, editor,
+import           Brick.Widgets.Edit           (editContentsL,
                                                getEditContents,
                                                handleEditorEvent, renderEditor)
 import           Brick.Widgets.FileBrowser
@@ -572,7 +573,7 @@ renderView ConfigEditorView = renderConfigEditor
 
 renderConfigEditor :: AppState -> [Widget Name]
 renderConfigEditor s = [vBox $ edit <> err <> msg <> stat] where
-  edit = [renderEditor (highlight haskellSyntax . Text.unlines) True (_asConfigEditor s)]
+  edit = [renderHaskellEditor True $ s ^. asConfigEditor]
   err = case s ^. asConfig . to dyreError of
     Nothing -> []
     Just e -> [borderWithLabel (str "Rebuild error") $
@@ -585,7 +586,7 @@ renderMessage :: AppState -> Widget n
 renderMessage s = maybe (str "") txtWrap $ s ^. asMessage
 
 configEditorText :: Getter AppState Text
-configEditorText = asConfigEditor . to getEditContents . to Text.unlines
+configEditorText = asConfigEditor . heEditor . to getEditContents . to Text.unlines
 
 defaultGlobalKeymap :: Keymap
 defaultGlobalKeymap = Map.fromList
@@ -643,7 +644,7 @@ reloadConfigFile verbose = do
   a <- Text.decodeUtf8 <$>
        if | exists    -> liftIO $ ByteString.readFile fp
           | otherwise -> pure $(embedFile "app/Main.hs")
-  asConfigEditor .= editor ConfigEditor Nothing a
+  asConfigEditor .= haskellEditor ConfigEditor a
   when (verbose && exists) $
     message $ "Config loaded from " <> fp
 
@@ -659,8 +660,8 @@ loadBook = do
       pure ()
 
 gotoBeginningOfConfig, gotoEndOfConfig :: Action ()
-gotoBeginningOfConfig = modifying (asConfigEditor . editContentsL) Zipper.gotoBOF
-gotoEndOfConfig       = modifying (asConfigEditor . editContentsL) Zipper.gotoEOF
+gotoBeginningOfConfig = modifying (asConfigEditor . heEditor . editContentsL) Zipper.gotoBOF
+gotoEndOfConfig       = modifying (asConfigEditor . heEditor . editContentsL) Zipper.gotoEOF
 
 vScrollBy :: Name -> Int -> Action ()
 vScrollBy n = Brick.vScrollBy (Brick.viewportScroll n)
@@ -719,7 +720,7 @@ data EventHandler = EventHandler
 
 configEditorHandler :: EventHandler
 configEditorHandler = EventHandler (asConfig . configEditorKeymapL) $ \e -> do
-  zoom asConfigEditor $ handleEditorEvent (VtyEvent e)
+  zoom asConfigEditor $ handleHaskellEditorEvent e
 
 defaultChessboardKeymap :: Keymap
 defaultChessboardKeymap = Map.fromList $
@@ -967,7 +968,7 @@ initialState chan cfg =
     , ( ExplorerView, focusRing [PlyList, FileBrowser, GameList] )
     , ( ConfigEditorView, focusRing [ConfigEditor] )
     ]
-  edit = editor ConfigEditor Nothing (Text.decodeUtf8 $(embedFile "app/Main.hs"))
+  edit = haskellEditor ConfigEditor (Text.decodeUtf8 $(embedFile "app/Main.hs"))
 
 focusedView :: Getter AppState (Maybe ViewName)
 focusedView = asFocus . to focusGetCurrent

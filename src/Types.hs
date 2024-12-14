@@ -7,7 +7,7 @@ import           Brick.BChan                  (BChan)
 import           Brick.Focus                  (FocusRing)
 import qualified Brick.Types                  as Brick
 import           Brick.Widgets.Chess
-import qualified Brick.Widgets.Edit           as Brick
+import           Brick.Widgets.HaskellEditor (HaskellEditor)
 import qualified Brick.Widgets.FileBrowser    as Brick
 import qualified Brick.Widgets.List           as Brick
 import           Control.Concurrent           (ThreadId)
@@ -143,7 +143,7 @@ data AppState = AppState
   , _asGame         :: Game
   , _asAnalyser     :: Maybe Analyser
   , _asExplorer     :: Explorer
-  , _asConfigEditor :: Brick.Editor Text Name
+  , _asConfigEditor :: HaskellEditor Name
   , _asMessage      :: Maybe Text
   , _asRelaunch     :: Bool
   }
