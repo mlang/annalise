@@ -80,7 +80,7 @@ data GameChooserStep = ChooseFile (Brick.FileBrowser Name)
 
 makePrisms ''GameChooserStep
 
-data GameChooser = GameChooser
+newtype GameChooser = GameChooser
   { step :: GameChooserStep
   } deriving (Generic)
 

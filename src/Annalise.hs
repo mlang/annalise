@@ -1,16 +1,17 @@
-{-# LANGUAGE DeriveGeneric     #-}
-{-# LANGUAGE FlexibleContexts  #-}
-{-# LANGUAGE FlexibleInstances #-}
-{-# LANGUAGE LambdaCase        #-}
-{-# LANGUAGE MultiWayIf        #-}
-{-# LANGUAGE NamedFieldPuns    #-}
-{-# LANGUAGE OverloadedLabels  #-}
-{-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE RankNTypes        #-}
-{-# LANGUAGE RecordWildCards   #-}
-{-# LANGUAGE TemplateHaskell   #-}
-{-# LANGUAGE TupleSections     #-}
-{-# LANGUAGE ViewPatterns      #-}
+{-# LANGUAGE DeriveGeneric       #-}
+{-# LANGUAGE FlexibleContexts    #-}
+{-# LANGUAGE FlexibleInstances   #-}
+{-# LANGUAGE LambdaCase          #-}
+{-# LANGUAGE MultiWayIf          #-}
+{-# LANGUAGE NamedFieldPuns      #-}
+{-# LANGUAGE OverloadedLabels    #-}
+{-# LANGUAGE OverloadedRecordDot #-}
+{-# LANGUAGE OverloadedStrings   #-}
+{-# LANGUAGE RankNTypes          #-}
+{-# LANGUAGE RecordWildCards     #-}
+{-# LANGUAGE TemplateHaskell     #-}
+{-# LANGUAGE TupleSections       #-}
+{-# LANGUAGE ViewPatterns        #-}
 module Annalise (
   Config( engineExecutable
         , engineArgs
@@ -134,7 +135,7 @@ import           Types
 
 pgnGame :: Game -> PGN.Game
 pgnGame g = PGN.gameFromForest [] ts PGN.Undecided where
-  ts = listToForest $ g ^. #plies
+  ts = listToForest $ g.plies
 
 ------------------------------------------------------------------------------
 
@@ -208,31 +209,31 @@ commandLine :: Config -> Parser Config
 commandLine cfg = Config <$>
   strOption (long "engine-executable"
           <> metavar "NAME"
-          <> showDefault <> value (cfg ^. #engineExecutable)
+          <> showDefault <> value (cfg.engineExecutable)
           <> help "Path to the UCI engine executable") <*>
-  pure (cfg ^. #engineArgs) <*>
-  pure (cfg ^. #engineStartupTimeout) <*>
-  optional (option auto $ long "engine-multi-pv" <> metavar "N" <> case cfg ^. #engineMultiPV of {Just i -> value i <> showDefault; Nothing -> mempty}) <*>
-  optional (option auto $ long "engine-threads" <> metavar "N" <> case cfg ^. #engineThreads of {Just i -> value i <> showDefault; Nothing -> mempty}) <*>
-  pure (cfg ^. #positionRenderer) <*>
+  pure (cfg.engineArgs) <*>
+  pure (cfg.engineStartupTimeout) <*>
+  optional (option auto $ long "engine-multi-pv" <> metavar "N" <> case cfg.engineMultiPV of {Just i -> value i <> showDefault; Nothing -> mempty}) <*>
+  optional (option auto $ long "engine-threads" <> metavar "N" <> case cfg.engineThreads of {Just i -> value i <> showDefault; Nothing -> mempty}) <*>
+  pure (cfg.positionRenderer) <*>
   option auto (long "channel-size"
             <> metavar "INT"
             <> help "Event channel size"
-            <> showDefault <> value (cfg ^. #channelSize)) <*>
-  pure (cfg ^. #theme) <*>
-  optional (strOption (long "pgn-directory" <> metavar "DIR" <> case cfg ^. #pgnDirectory of { Just dir -> showDefault <> value dir; Nothing -> mempty })) <*>
-  optional (strOption (long "polyglot-book" <> metavar "DIR" <> case cfg ^. #polyglotBook of { Just dir -> showDefault <> value dir; Nothing -> mempty })) <*>
-  pure (cfg ^. #helpKeymap) <*>
-  pure (cfg ^. #chessboardKeymap) <*>
-  pure (cfg ^. #explorerKeymap) <*>
-  pure (cfg ^. #pgnBrowserKeymap) <*>
-  pure (cfg ^. #gameListKeymap) <*>
-  pure (cfg ^. #configEditorKeymap) <*>
-  pure (cfg ^. #globalKeymap) <*>
-  pure (cfg ^. #onStartup) <*>
-  pure (cfg ^. #defaultView) <*>
-  pure (cfg ^. #configFile) <*>
-  pure (cfg ^. #dyreError)
+            <> showDefault <> value (cfg.channelSize)) <*>
+  pure (cfg.theme) <*>
+  optional (strOption (long "pgn-directory" <> metavar "DIR" <> case cfg.pgnDirectory of { Just dir -> showDefault <> value dir; Nothing -> mempty })) <*>
+  optional (strOption (long "polyglot-book" <> metavar "DIR" <> case cfg.polyglotBook of { Just dir -> showDefault <> value dir; Nothing -> mempty })) <*>
+  pure (cfg.helpKeymap) <*>
+  pure (cfg.chessboardKeymap) <*>
+  pure (cfg.explorerKeymap) <*>
+  pure (cfg.pgnBrowserKeymap) <*>
+  pure (cfg.gameListKeymap) <*>
+  pure (cfg.configEditorKeymap) <*>
+  pure (cfg.globalKeymap) <*>
+  pure (cfg.onStartup) <*>
+  pure (cfg.defaultView) <*>
+  pure (cfg.configFile) <*>
+  pure (cfg.dyreError)
 
 withFocus :: (ViewName -> Name -> Action a) -> Action a
 withFocus f = do
@@ -277,13 +278,13 @@ renderHelp s = [ui] where
              txt "annalise help"
     vp = viewport Help Vertical content
     content = vBox $ padTop (Pad 1) . r <$>
-      [ s ^. #config . #globalKeymap
-      , s ^. #config . #chessboardKeymap
-      , s ^. #config . #explorerKeymap
-      , s ^. #config . #configEditorKeymap
+      [ s.config.globalKeymap
+      , s.config.chessboardKeymap
+      , s.config.explorerKeymap
+      , s.config.configEditorKeymap
       ]
     r = Map.foldlWithKey f emptyWidget where
-      f w k b = w <=> ((vLimit 1 . hLimit 20 $ txt (ppVtyEvent k) <+> fill ' ') <+> txtWrap (b ^. #description))
+      f w k b = w <=> ((vLimit 1 . hLimit 20 $ txt (ppVtyEvent k) <+> fill ' ') <+> txtWrap (b.description))
 
 ppVtyEvent :: Vty.Event -> Text
 ppVtyEvent (Vty.EvKey k mods) = Text.intercalate "-" $
@@ -326,8 +327,8 @@ helpHandler = EventHandler (#config . #helpKeymap) $ const continue
 ------------------------------------------------------------------------------
 
 eCurrentPosition, ePreviousPosition :: Explorer -> Position
-eCurrentPosition e = foldl' unsafeDoPly (e ^. #initial) (e^.ePlies)
-ePreviousPosition e = foldl' unsafeDoPly (e ^. #initial) (e^.ePlies.to NonEmpty.init)
+eCurrentPosition e = foldl' unsafeDoPly (e.initial) (e ^. ePlies)
+ePreviousPosition e = foldl' unsafeDoPly (e.initial) (e ^. ePlies . to NonEmpty.init)
 
 elemList :: Eq a => n -> a -> [a] -> Brick.List n a
 elemList n x xs = Brick.list n (Vector.fromList xs) 1
@@ -348,9 +349,9 @@ renderExplorer s = go $ view #explorer s where
     list = withFocusRing' s ExplorerView
       (Brick.renderList (drawPly (ePreviousPosition e))) (ePlyList e)
     drawPly p foc = putCursorIf foc PlyList (0, 0) . str . toSAN p
-    board = (s ^. #config . #positionRenderer) Chessboard (en `withEmptyAs` space) Nothing (Just (color (ePreviousPosition e))) (eCurrentPosition e) True
-    var = strWrap $ varToSAN (e ^. #initial) (e ^. #treePos . to label)
-    fb = case e ^. #gameChooser of
+    board = (s.config.positionRenderer) Chessboard (en `withEmptyAs` space) Nothing (Just (color (ePreviousPosition e))) (eCurrentPosition e) True
+    var = strWrap $ varToSAN (e.initial) (e ^. #treePos . to label)
+    fb = case e.gameChooser of
       Just (GameChooser (ChooseFile fb)) ->
         [renderFileBrowser True fb <=> renderMessage s]
       Just (GameChooser (ChooseGame (_, l))) ->
@@ -515,7 +516,7 @@ toggleAnalyser = do
     Nothing -> startAnalyser
     Just a -> do
       stopSearch
-      liftIO $ UCI.quit (a ^. #engine)
+      liftIO $ UCI.quit (a.engine)
       #analyser .= Nothing
 
 startAnalyser :: MonadIO m => MonadState AppState m => m ()
@@ -531,8 +532,8 @@ startSearch = do
   use #analyser >>= \case
     Just a -> do
       pos <- use $ #game . #initial
-      UCI.setPosition (a ^. #engine) pos =<< use (#game . #plies)
-      (bmc, ic) <- UCI.search (a ^. #engine) [UCI.infinite]
+      UCI.setPosition (a.engine) pos =<< use (#game . #plies)
+      (bmc, ic) <- UCI.search (a.engine) [UCI.infinite]
       chan <- use #channel
       tid <- liftIO . forkIO . forever $
         atomically (readTChan ic) >>= writeBChanNonBlocking chan
@@ -542,11 +543,11 @@ startSearch = do
 stopSearch :: MonadIO m => MonadState AppState m => m Bool
 stopSearch = do
   use #analyser >>= \case
-    Just a -> case a ^. #reader of
+    Just a -> case a.reader of
       Just (bmc, tid) -> do
         liftIO $ do
           killThread tid
-          let e = a ^. #engine
+          let e = a.engine
           UCI.stop e
           void . atomically $ readTChan bmc
           UCI.isready e
@@ -576,8 +577,8 @@ renderView ConfigEditorView = renderConfigEditor
 
 renderConfigEditor :: AppState -> [Widget Name]
 renderConfigEditor s = [vBox $ edit <> err <> msg <> stat] where
-  edit = [renderHaskellEditor True $ s ^. #configEditor]
-  err = case s ^. #config . #dyreError of
+  edit = [renderHaskellEditor True $ s.configEditor]
+  err = case s.config.dyreError of
     Nothing -> []
     Just e -> [borderWithLabel (str "Rebuild error") $
                viewport RebuildError Both $
@@ -586,7 +587,7 @@ renderConfigEditor s = [vBox $ edit <> err <> msg <> stat] where
   stat = [vLimit 1 $ str "C-q to quit"]
 
 renderMessage :: AppState -> Widget n
-renderMessage s = maybe (str "") txtWrap $ s ^. #message
+renderMessage s = maybe (str "") txtWrap $ s.message
 
 configEditorText :: Getter AppState Text
 configEditorText = #configEditor . #editor . to getEditContents . to Text.unlines
@@ -796,7 +797,7 @@ plyInput c = do
 
 validPlyInput :: Char -> Game -> Bool
 validPlyInput c g = not . null $
-  selectedPlies (currentPosition g) (g ^. #input <> [c])
+  selectedPlies (currentPosition g) (g.input <> [c])
 
 plyInputBS :: Action ()
 plyInputBS = modifying (#game . #input) $ \case
@@ -804,11 +805,11 @@ plyInputBS = modifying (#game . #input) $ \case
   s  -> init s
 
 selectedPly :: Game -> Maybe Ply
-selectedPly g = case g ^. #input of
+selectedPly g = case g.input of
   "" -> Nothing
   str -> case selectedPlies (currentPosition g) str of
     [ply] -> Just ply
-    _ -> Nothing
+    _     -> Nothing
 
 commonPrefix :: Eq a => [a] -> [a] -> [a]
 commonPrefix _ []                      = []
@@ -844,8 +845,8 @@ handleViewEvent = go where
   go ExplorerView FileBrowser = dispatch pgnBrowserHandler
   go ExplorerView GameList    = dispatch gameListHandler
   go ConfigEditorView _       = dispatch configEditorHandler
-  dispatch (EventHandler keymapL fallback) e = get >>= action where
-    local s = case Map.lookup e (s ^. keymapL) of
+  dispatch (EventHandler keymap fallback) e = get >>= action where
+    local s = case Map.lookup e (s ^. keymap) of
       Just b -> do
         g <- b ^. #guard
         if g then b ^. #action else fallback e
@@ -854,15 +855,15 @@ handleViewEvent = go where
       clearMessage
       case Map.lookup e (s ^. #config . #globalKeymap) of
         Just b -> do
-          g <- b ^. #guard
-          if g then b ^. #action else local s
+          g <- b.guard
+          if g then b.action else local s
         Nothing -> local s
 
 ------------------------------------------------------------------------------
 
 currentPosition, previousPosition :: Game -> Position
-currentPosition g = foldl' unsafeDoPly (g ^. #initial) (g ^. #plies)
-previousPosition g = foldl' unsafeDoPly (g ^. #initial) (init (g ^. #plies))
+currentPosition g = foldl' unsafeDoPly (g.initial) (g.plies)
+previousPosition g = foldl' unsafeDoPly (g.initial) (init (g.plies))
 
 cursorMod :: (Bool -> (Rank, File) -> (Rank, File)) -> Action ()
 cursorMod f = do
@@ -924,7 +925,7 @@ addPly pl = changeGame $ do
   #game . #input .= ""
 
 renderGame :: AppState -> [Widget Name]
-renderGame s = [w $ s ^. #game] where
+renderGame s = [w $ s.game] where
   status = renderMessage s
   pv = case s ^? #analyser . traverse . #pvs of
     Just pvs -> let pos = s ^. #game . to currentPosition
@@ -943,21 +944,21 @@ renderGame s = [w $ s ^. #game] where
     <=> fill ' '
     <=> status
    where
-    board = (s ^. #config . #positionRenderer) Chessboard (en `withEmptyAs` space) cursor (g ^. #perspective) pos (null $ g ^. #input)
-    cursor | null (g ^. #input) = Just $ g ^. #cursor
+    board = (s.config.positionRenderer) Chessboard (en `withEmptyAs` space) cursor (g.perspective) pos (null $ g.input)
+    cursor | null (g.input) = Just $ g.cursor
            | otherwise          = Nothing
-    var = strWrap . varToSAN (g ^. #initial) $ g ^. #plies
+    var = strWrap . varToSAN (g.initial) $ g.plies
     sideToMove = str . show . color $ pos
-    lastPly = case g ^. #plies of
+    lastPly = case g.plies of
       [] -> str "START"
       ps -> str (show (moveNumber pos))
         <+> str (if color pos == Black then "." else "...")
         <+> str (toSAN (previousPosition g) (last ps))
-    input = case g ^. #input of
+    input = case g.input of
       "" -> emptyWidget
       input -> showCursor Chessboard (Location (length input, 0)) (str input)
            <+> str "{" <+> plies <+> str "}"
-    plies = drawSelectedPlies pos (g ^. #input)
+    plies = drawSelectedPlies pos (g.input)
     pos = currentPosition g
 
 ------------------------------------------------------------------------------
@@ -966,7 +967,7 @@ initialState :: BChan AppEvent -> Config -> AppState
 initialState chan cfg =
   AppState chan cfg focus viewFocus defaultGame Nothing (defaultExplorer defaultBook) edit Nothing False
  where
-  focus = focusSetCurrent (cfg ^. #defaultView) (focusRing [minBound .. maxBound])
+  focus = focusSetCurrent (cfg.defaultView) (focusRing [minBound .. maxBound])
   viewFocus = Map.fromList
     [ ( ChessboardView, focusRing [Chessboard] )
     , ( ExplorerView, focusRing [PlyList, FileBrowser, GameList] )
@@ -981,7 +982,7 @@ setView :: ViewName -> AppState -> AppState
 setView v = #focus %~ focusSetCurrent v
 
 viewName :: AppState -> ViewName
-viewName s = fromMaybe (s ^. #config . #defaultView) $ s ^. focusedView
+viewName s = fromMaybe (s.config.defaultView) $ s ^. focusedView
 
 focusedWidget :: AppState -> Maybe (FocusRing Name)
 focusedWidget s = s ^. #viewFocus . at (viewName s)
@@ -1047,9 +1048,9 @@ restore = do
 main :: Config -> IO ()
 main inCfg = do
   cfg <- execParser $ info (commandLine inCfg <**> helper) $ briefDesc
-  chan <- newBChan $ cfg ^. #channelSize
+  chan <- newBChan $ cfg.channelSize
   (appState, _) <- Brick.customMainWithDefaultVty (Just chan) app (initialState chan cfg)
-  when (appState ^. #relaunch) $ Dyre.relaunchMaster Nothing
+  when (appState.relaunch) $ Dyre.relaunchMaster Nothing
 
 showError :: Config -> String -> Config
 showError cfg s = cfg { dyreError = Just s }
