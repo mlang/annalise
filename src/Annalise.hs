@@ -73,7 +73,7 @@ import           Brick.Widgets.HaskellEditor  (handleHaskellEditorEvent,
                                                haskellEditor,
                                                renderHaskellEditor)
 import qualified Brick.Widgets.List           as Brick
-import           Brick.Widgets.Skylighting    (attrMappingsForStyle, highlight)
+import           Brick.Widgets.Skylighting    (attrMappingsForStyle)
 import qualified Config.Dyre                  as Dyre
 import qualified Config.Dyre.Paths            as Dyre
 import qualified Config.Dyre.Relaunch         as Dyre
@@ -150,11 +150,11 @@ ePlies :: Getter Explorer (NonEmpty Ply)
 ePlies = #treePos . to label
 
 defaultExplorer :: PolyglotBook -> Explorer
-defaultExplorer book = Explorer { .. } where
-  _eInitial = startpos
-  _eTreePos = fromJust . nextTree . fromForest $
-              breadcrumbs <$> bookForest book _eInitial
-  _eGameChooser = Nothing
+defaultExplorer book = Explorer { .. } where 
+  initial = startpos
+  treePos = fromJust . nextTree . fromForest $
+            breadcrumbs <$> bookForest book initial
+  gameChooser = Nothing
 
 data SavePGN = SavePGN
   { _spFilename :: FilePath
@@ -316,9 +316,9 @@ helpDown = vScrollBy Help 1
 defaultHelpKeymap :: Keymap
 defaultHelpKeymap = Map.fromList
   [ ( Vty.EvKey Vty.KUp []
-    , simpleBinding "Scroll up" $ helpUp *> continue )
+    , simpleBinding "Scroll up" $ helpUp )
   , ( Vty.EvKey Vty.KDown []
-    , simpleBinding "Scroll down" $ helpDown *> continue )
+    , simpleBinding "Scroll down" $ helpDown )
   ]
 
 helpHandler :: EventHandler
@@ -382,8 +382,6 @@ withFocusRing' s v f a = withFocusRing (s ^?! #viewFocus . ix v)
 explorerHandler :: EventHandler
 explorerHandler = EventHandler (#config . #explorerKeymap) $ \e -> do
   message $ UnboundEvent e
-  continue
-
 
 explorerPrev, explorerNext, explorerFirstChild, explorerParent :: Action ()
 explorerPrev = #explorer . #treePos %= (fromMaybe <*> TreePos.prev)
@@ -425,19 +423,19 @@ eAbortOpenFile = do
 
 defaultExplorerKeymap = Map.fromList
   [ ( Vty.EvKey Vty.KDown []
-    , simpleBinding "Select next move" $ explorerNext *> continue
+    , simpleBinding "Select next move" $ explorerNext
     )
   , ( Vty.EvKey Vty.KUp []
-    , simpleBinding "Select previous move" $ explorerPrev *> continue
+    , simpleBinding "Select previous move" $ explorerPrev
     )
   , ( Vty.EvKey Vty.KRight []
-    , simpleBinding "First child" $ explorerFirstChild *> continue
+    , simpleBinding "First child" $ explorerFirstChild
     )
   , ( Vty.EvKey Vty.KLeft []
-    , simpleBinding "Parent" $ explorerParent *> continue
+    , simpleBinding "Parent" $ explorerParent
     )
   , ( Vty.EvKey (Vty.KChar 'c') [Vty.MCtrl]
-    , simpleBinding "Create game from this variation" $ createGameFromExplorer *> continue
+    , simpleBinding "Create game from this variation" $ createGameFromExplorer
     )
   , ( Vty.EvKey (Vty.KChar 'o') [Vty.MCtrl]
     , simpleBinding "Open PGN file" $ eOpenFile *> continue
@@ -552,7 +550,7 @@ stopSearch = do
           void . atomically $ readTChan bmc
           UCI.isready e
         #analyser . traverse . #reader .= Nothing
-        #analyser . traverse . #pvs     .= Vector.empty
+        #analyser . traverse . #pvs    .= Vector.empty
         pure True
       Nothing -> pure False
     Nothing -> pure False
@@ -566,9 +564,6 @@ changeGame action = do
 
 ------------------------------------------------------------------------------
 
-haskellSyntax :: Syntax
-haskellSyntax = fromJust $ "haskell" `lookupSyntax` defaultSyntaxMap
-
 renderView :: ViewName -> AppState -> [Widget Name]
 renderView HelpView         = renderHelp
 renderView ChessboardView   = renderGame
@@ -576,7 +571,7 @@ renderView ExplorerView     = renderExplorer
 renderView ConfigEditorView = renderConfigEditor
 
 renderConfigEditor :: AppState -> [Widget Name]
-renderConfigEditor s = [vBox $ edit <> err <> msg <> stat] where
+renderConfigEditor s = [vBox $ edit <> err <> msg <> status] where
   edit = [renderHaskellEditor True $ s.configEditor]
   err = case s.config.dyreError of
     Nothing -> []
@@ -584,7 +579,7 @@ renderConfigEditor s = [vBox $ edit <> err <> msg <> stat] where
                viewport RebuildError Both $
                str e]
   msg = [renderMessage s]
-  stat = [vLimit 1 $ str "C-q to quit"]
+  status = [vLimit 1 $ str "C-r to reload, C-q to quit"]
 
 renderMessage :: AppState -> Widget n
 renderMessage s = maybe (str "") txtWrap $ s.message
@@ -661,7 +656,6 @@ loadBook = do
       book <- liftIO $ readPolyglotFile fp
       #explorer . #treePos .= (fromJust . nextTree . fromForest)
         (breadcrumbs <$> bookForest book startpos)
-      pure ()
 
 gotoBeginningOfConfig, gotoEndOfConfig :: Action ()
 gotoBeginningOfConfig = modifying (#configEditor . #editor . editContentsL) Zipper.gotoBOF
@@ -990,10 +984,8 @@ focusedWidget s = s ^. #viewFocus . at (viewName s)
 addPV :: Int -> UCI.Score -> Maybe UCI.Bounds -> Unboxed.Vector Ply
       -> Vector PredictedVariation -> Vector PredictedVariation
 addPV i score bounds pv pvs
-  | i == Vector.length pvs
-  = pvs <> Vector.singleton (PV score bounds pv)
-  | otherwise
-  = pvs Vector.// [(i, PV score bounds pv)]
+  | i == Vector.length pvs = pvs <> Vector.singleton (PV score bounds pv)
+  | otherwise = pvs Vector.// [(i, PV score bounds pv)]
 
 app :: Brick.App AppState AppEvent Name
 app = Brick.App { .. } where
